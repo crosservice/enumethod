@@ -20,8 +20,8 @@
 #   --dry-run               Print commands without executing
 #   -h, --help              Show this help message
 #
-# Requirements: nmap (minimum). Optional tools are detected and skipped
-#               gracefully if not installed.
+# Requirements: nmap (minimum). Missing tools are auto-installed via
+#               apt/pip/go. If install fails, the step is noted and skipped.
 # ==============================================================================
 
 set -euo pipefail
@@ -98,6 +98,164 @@ has_cmd() {
     command -v "$1" &>/dev/null
 }
 
+# =============================================================================
+# Auto-installation support
+# =============================================================================
+# Maps tool binary name → install method.
+# Format: "apt:pkg" | "pip:pkg" | "go:module@version" | "snap:pkg" | "script:url"
+# Multiple methods separated by ";" are tried in order.
+declare -A TOOL_PKG_MAP=(
+    # Passive recon
+    [amass]="snap:amass;go:github.com/owasp-amass/amass/v4/...@master"
+    [curl]="apt:curl"
+    [dig]="apt:dnsutils"
+    [whois]="apt:whois"
+    [jq]="apt:jq"
+    # Web
+    [whatweb]="apt:whatweb"
+    [testssl.sh]="apt:testssl"
+    [feroxbuster]="apt:feroxbuster;snap:feroxbuster"
+    [gobuster]="apt:gobuster;go:github.com/OJ/gobuster/v3@latest"
+    [ffuf]="apt:ffuf;go:github.com/ffuf/ffuf/v2@latest"
+    [nikto]="apt:nikto"
+    [sslyze]="pip:sslyze"
+    # Auth
+    [ssh-audit]="apt:ssh-audit;pip:ssh-audit"
+    # SMB
+    [enum4linux-ng]="pip:enum4linux-ng"
+    [smbclient]="apt:smbclient"
+    [crackmapexec]="pip:crackmapexec"
+    # Mail
+    [smtp-user-enum]="apt:smtp-user-enum"
+    # SNMP
+    [onesixtyone]="apt:onesixtyone"
+    [snmpwalk]="apt:snmp"
+    [snmp-check]="apt:snmpcheck"
+    # Database clients
+    [mysql]="apt:default-mysql-client"
+    [psql]="apt:postgresql-client"
+    [redis-cli]="apt:redis-tools"
+    [mongosh]="apt:mongosh"
+    # NFS / LDAP
+    [rpcinfo]="apt:rpcbind"
+    [showmount]="apt:nfs-common"
+    [ldapsearch]="apt:ldap-utils"
+    # Vuln scanning
+    [nuclei]="go:github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
+    [searchsploit]="apt:exploitdb"
+    [sqlmap]="apt:sqlmap"
+    # Required
+    [nmap]="apt:nmap"
+)
+
+# Track tools that failed installation so we don't retry
+declare -A INSTALL_FAILED=()
+
+# Install a tool by its binary name. Returns 0 on success, 1 on failure.
+install_tool() {
+    local tool="$1"
+    local methods="${TOOL_PKG_MAP[$tool]:-}"
+
+    if [ -z "$methods" ]; then
+        log_warn "No install method known for '$tool'"
+        INSTALL_FAILED[$tool]=1
+        return 1
+    fi
+
+    log_step "Attempting to install '$tool'..."
+
+    # Try each method separated by ;
+    IFS=';' read -ra METHOD_LIST <<< "$methods"
+    for method in "${METHOD_LIST[@]}"; do
+        local type="${method%%:*}"
+        local pkg="${method#*:}"
+
+        case "$type" in
+            apt)
+                log_step "  Trying: apt-get install -y $pkg"
+                if apt-get install -y "$pkg" >> /tmp/enumerate_install.log 2>&1; then
+                    if has_cmd "$tool"; then
+                        log_ok "Installed '$tool' via apt ($pkg)"
+                        return 0
+                    fi
+                fi
+                ;;
+            pip)
+                log_step "  Trying: pip install $pkg"
+                if pip install "$pkg" >> /tmp/enumerate_install.log 2>&1 || \
+                   pip3 install "$pkg" >> /tmp/enumerate_install.log 2>&1; then
+                    if has_cmd "$tool"; then
+                        log_ok "Installed '$tool' via pip ($pkg)"
+                        return 0
+                    fi
+                fi
+                ;;
+            go)
+                if has_cmd go; then
+                    log_step "  Trying: go install $pkg"
+                    if go install "$pkg" >> /tmp/enumerate_install.log 2>&1; then
+                        # go installs to $GOPATH/bin or ~/go/bin
+                        export PATH="$PATH:${GOPATH:-$HOME/go}/bin"
+                        if has_cmd "$tool"; then
+                            log_ok "Installed '$tool' via go ($pkg)"
+                            return 0
+                        fi
+                    fi
+                fi
+                ;;
+            snap)
+                if has_cmd snap; then
+                    log_step "  Trying: snap install $pkg"
+                    if snap install "$pkg" >> /tmp/enumerate_install.log 2>&1; then
+                        if has_cmd "$tool"; then
+                            log_ok "Installed '$tool' via snap ($pkg)"
+                            return 0
+                        fi
+                    fi
+                fi
+                ;;
+        esac
+    done
+
+    log_warn "Failed to install '$tool' (tried: $methods). Skipping related checks."
+    log_warn "  Install log: /tmp/enumerate_install.log"
+    INSTALL_FAILED[$tool]=1
+    return 1
+}
+
+# Ensure a command is available: check → install → check again.
+# Returns 0 if the tool is available (or was just installed), 1 if not.
+ensure_cmd() {
+    local tool="$1"
+    has_cmd "$tool" && return 0
+    # Already failed? Don't retry.
+    [ "${INSTALL_FAILED[$tool]:-0}" = "1" ] && return 1
+    install_tool "$tool"
+}
+
+# Install seclists wordlists if any are missing
+ensure_wordlists() {
+    local missing=false
+    for wl in "$WORDLIST_DIR" "$WORDLIST_USERS" "$WORDLIST_SNMP" "$WORDLIST_VHOSTS"; do
+        [ ! -f "$wl" ] && missing=true
+    done
+    if $missing; then
+        log_step "SecLists wordlists missing. Attempting install..."
+        if apt-get install -y seclists >> /tmp/enumerate_install.log 2>&1; then
+            log_ok "SecLists installed"
+        elif has_cmd git; then
+            log_step "Falling back to git clone..."
+            if [ ! -d /usr/share/seclists ]; then
+                git clone --depth 1 https://github.com/danielmiessler/SecLists.git /usr/share/seclists \
+                    >> /tmp/enumerate_install.log 2>&1 && log_ok "SecLists cloned" || \
+                    log_warn "Failed to install SecLists. Brute-force steps may be skipped."
+            fi
+        else
+            log_warn "Cannot install SecLists (no apt or git). Brute-force steps may be skipped."
+        fi
+    fi
+}
+
 # Run a command, log it, handle dry-run mode. Captures output to a file.
 # Usage: run_cmd <description> <output_file> <command...>
 run_cmd() {
@@ -126,7 +284,7 @@ run_cmd() {
     return 0
 }
 
-# Run a command only if the tool is installed; skip otherwise.
+# Run a command, auto-installing the tool if needed. Skips only if install fails.
 # Usage: run_if <tool_name> <description> <output_file> <command...>
 run_if() {
     local tool="$1"
@@ -134,10 +292,10 @@ run_if() {
     local outfile="$3"
     shift 3
 
-    if has_cmd "$tool"; then
+    if ensure_cmd "$tool"; then
         run_cmd "$desc" "$outfile" "$@"
     else
-        log_skip "$desc (${tool} not installed)"
+        log_skip "$desc (${tool} not available — install failed)"
     fi
 }
 
@@ -217,7 +375,9 @@ fi
 
 # Resolve domain from reverse DNS if not provided
 if [ -z "$DOMAIN" ]; then
-    DOMAIN=$(dig +short -x "$TARGET" 2>/dev/null | sed 's/\.$//' | awk -F. '{print $(NF-1)"."$NF}')
+    if ensure_cmd dig; then
+        DOMAIN=$(dig +short -x "$TARGET" +timeout=3 +tries=1 2>/dev/null | grep -v '^;' | head -1 | sed 's/\.$//' | awk -F. '{if(NF>=2) print $(NF-1)"."$NF}' || true)
+    fi
     if [ -z "$DOMAIN" ]; then
         DOMAIN="$TARGET"
         log_warn "No domain resolved from reverse DNS. Using IP as domain. Pass -d to set manually."
@@ -241,45 +401,72 @@ if [ "$(id -u)" -ne 0 ] && ! $DRY_RUN; then
 fi
 
 # =============================================================================
-# Pre-flight: tool detection
+# Pre-flight: tool detection and auto-installation
 # =============================================================================
 log_banner "Pre-flight Check"
 
+# Update apt cache once if we'll need to install anything
+APT_UPDATED=false
+preflight_apt_update() {
+    if ! $APT_UPDATED; then
+        log_step "Updating apt package cache..."
+        apt-get update -qq >> /tmp/enumerate_install.log 2>&1 || true
+        APT_UPDATED=true
+    fi
+}
+
 REQUIRED_TOOLS=(nmap)
 OPTIONAL_TOOLS=(
-    amass curl dig whois jq                                          # passive
-    whatweb testssl.sh feroxbuster gobuster ffuf nikto sslyze        # web
+    curl dig whois jq                                                # passive (amass installed on-demand)
+    whatweb nikto                                                     # web
     ssh-audit                                                        # auth
-    enum4linux-ng smbclient crackmapexec                             # smb
-    smtp-user-enum                                                   # mail
-    onesixtyone snmpwalk snmp-check                                  # snmp
-    mysql psql redis-cli mongosh                                     # db
-    rpcinfo showmount ldapsearch                                     # nfs/ldap
-    nuclei searchsploit sqlmap                                       # vulns
+    smbclient                                                        # smb
+    snmpwalk                                                         # snmp
+    ldapsearch                                                       # nfs/ldap
 )
 
+# Install required tools first
 for tool in "${REQUIRED_TOOLS[@]}"; do
     if has_cmd "$tool"; then
         log_ok "$tool found"
     else
-        log_error "$tool is REQUIRED but not installed. Aborting."
-        exit 1
+        log_warn "$tool not found — attempting install..."
+        preflight_apt_update
+        if install_tool "$tool"; then
+            log_ok "$tool installed successfully"
+        else
+            log_error "$tool is REQUIRED and could not be installed. Aborting."
+            exit 1
+        fi
     fi
 done
 
-MISSING_COUNT=0
+# Pre-install common optional tools (the rest install on-demand during steps)
+INSTALLED_COUNT=0
+FAILED_COUNT=0
 for tool in "${OPTIONAL_TOOLS[@]}"; do
     if has_cmd "$tool"; then
         echo -e "  ${GREEN}✓${NC} $tool"
     else
-        echo -e "  ${YELLOW}✗${NC} $tool (will skip related checks)"
-        ((MISSING_COUNT++)) || true
+        preflight_apt_update
+        if install_tool "$tool"; then
+            echo -e "  ${GREEN}✓${NC} $tool (just installed)"
+            ((INSTALLED_COUNT++)) || true
+        else
+            echo -e "  ${RED}✗${NC} $tool (install failed — will skip)"
+            ((FAILED_COUNT++)) || true
+        fi
     fi
 done
 
-if [ "$MISSING_COUNT" -gt 0 ]; then
-    echo ""
-    log_warn "$MISSING_COUNT optional tools missing. Related steps will be skipped."
+# Install wordlists
+ensure_wordlists
+
+if [ "$INSTALLED_COUNT" -gt 0 ]; then
+    log_ok "$INSTALLED_COUNT tools installed during pre-flight"
+fi
+if [ "$FAILED_COUNT" -gt 0 ]; then
+    log_warn "$FAILED_COUNT tools could not be installed. Related steps will run on-demand or be skipped."
 fi
 
 echo ""
@@ -333,7 +520,7 @@ if should_run 1; then
         "dig ns '$DOMAIN' +noall +answer"
 
     # Zone transfer attempt against each name server
-    if has_cmd dig; then
+    if ensure_cmd dig; then
         log_step "Attempting zone transfers"
         if ! $DRY_RUN; then
             for ns in $(dig ns "$DOMAIN" +short 2>/dev/null); do
@@ -352,7 +539,7 @@ if should_run 1; then
         "amass enum -passive -d '$DOMAIN' -timeout 5"
 
     # Certificate transparency via crt.sh
-    if has_cmd curl && has_cmd jq; then
+    if ensure_cmd curl && ensure_cmd jq; then
         run_cmd "Certificate transparency lookup (crt.sh)" "$P/ct_subs.txt" \
             "curl -s 'https://crt.sh/?q=%25.$DOMAIN&output=json' | jq -r '.[].name_value' 2>/dev/null | sort -u"
     fi
@@ -365,7 +552,7 @@ if should_run 1; then
         log_ok "Combined ${local_count} unique subdomains → $P/all_subs.txt"
 
         # Resolve subdomains
-        if [ -s "$P/all_subs.txt" ] && has_cmd dig; then
+        if [ -s "$P/all_subs.txt" ] && ensure_cmd dig; then
             log_step "Resolving discovered subdomains"
             while IFS= read -r sub; do
                 ip=$(dig +short "$sub" 2>/dev/null | head -1)
@@ -473,7 +660,7 @@ if should_run 3; then
         fi
 
         # Sensitive file checks
-        if has_cmd curl && ! $DRY_RUN; then
+        if ensure_cmd curl && ! $DRY_RUN; then
             log_step "Checking for sensitive file exposure"
             SENSITIVE_PATHS=(
                 "/.git/HEAD" "/.env" "/robots.txt" "/sitemap.xml"
@@ -500,14 +687,14 @@ if should_run 3; then
 
         # Directory brute-force
         if ! $SKIP_BRUTEFORCE; then
-            if has_cmd feroxbuster; then
+            if ensure_cmd feroxbuster; then
                 run_cmd "Directory brute-force (feroxbuster)" "$W/feroxbuster.log" \
                     "feroxbuster -u '$BASE_URL' -w '$WORDLIST_DIR' -x php,html,txt,bak,json,xml -t 20 --rate-limit 100 -k --no-state -q -o '$W/ferox_dirs.txt' 2>&1"
-            elif has_cmd gobuster; then
+            elif ensure_cmd gobuster; then
                 run_cmd "Directory brute-force (gobuster)" "$W/gobuster.txt" \
                     "gobuster dir -u '$BASE_URL' -w '$WORDLIST_DIR' -x php,html,txt,bak -t 20 -k -q 2>&1"
             else
-                log_skip "Directory brute-force (feroxbuster/gobuster not installed)"
+                log_skip "Directory brute-force (feroxbuster/gobuster — install failed)"
             fi
 
             # Virtual host enumeration
@@ -613,14 +800,14 @@ if should_run 6; then
         port_open 25 && SMTP_PORT=25
         port_open 587 && SMTP_PORT=587
 
-        if has_cmd smtp-user-enum && [ -f "$WORDLIST_USERS" ]; then
+        if ensure_cmd smtp-user-enum && [ -f "$WORDLIST_USERS" ]; then
             run_cmd "SMTP user enumeration (VRFY)" "$M/smtp_vrfy.txt" \
                 "smtp-user-enum -M VRFY -U '$WORDLIST_USERS' -t '$TARGET' -p '$SMTP_PORT'"
 
             run_cmd "SMTP user enumeration (RCPT TO)" "$M/smtp_rcpt.txt" \
                 "smtp-user-enum -M RCPT -U '$WORDLIST_USERS' -t '$TARGET' -p '$SMTP_PORT'"
         else
-            log_skip "SMTP user enumeration (smtp-user-enum or wordlist not available)"
+            log_skip "SMTP user enumeration (smtp-user-enum unavailable or wordlist missing)"
         fi
 
         run_cmd "SMTP open relay and banner" "$M/smtp_nmap.txt" \
@@ -641,7 +828,7 @@ if should_run 7; then
 
     if udp_port_open 161 || $DRY_RUN; then
         # Brute-force community strings
-        if has_cmd onesixtyone && [ -f "$WORDLIST_SNMP" ]; then
+        if ensure_cmd onesixtyone && [ -f "$WORDLIST_SNMP" ]; then
             run_cmd "SNMP community string brute-force" "$SN/onesixtyone.txt" \
                 "onesixtyone -c '$WORDLIST_SNMP' '$TARGET'"
 
@@ -658,7 +845,7 @@ if should_run 7; then
             "snmpwalk -v2c -c '$COMMUNITY_STRING' '$TARGET' 2>&1"
 
         # Targeted OID walks
-        if has_cmd snmpwalk && ! $DRY_RUN; then
+        if ensure_cmd snmpwalk && ! $DRY_RUN; then
             log_step "Targeted SNMP OID walks"
             declare -A OIDS=(
                 ["system_info"]="1.3.6.1.2.1.1"
@@ -725,7 +912,7 @@ if should_run 8; then
         run_cmd "Redis nmap scripts" "$D/redis_nmap.txt" \
             "nmap --script redis-info -p 6379 -T${TIMING} '$TARGET'"
 
-        if has_cmd redis-cli && ! $DRY_RUN; then
+        if ensure_cmd redis-cli && ! $DRY_RUN; then
             log_step "Redis unauthenticated access check"
             {
                 echo "=== INFO server ==="
@@ -789,7 +976,7 @@ if should_run 9; then
             LDAP_PORT=636
         fi
 
-        if has_cmd ldapsearch; then
+        if ensure_cmd ldapsearch; then
             run_cmd "LDAP naming contexts" "$N/ldap_base.txt" \
                 "ldapsearch -x -H '${LDAP_PROTO}://$TARGET:${LDAP_PORT}' -b '' -s base namingContexts 2>&1"
 
@@ -805,7 +992,7 @@ if should_run 9; then
                 fi
             fi
         else
-            log_skip "LDAP enumeration (ldapsearch not installed)"
+            log_skip "LDAP enumeration (ldapsearch — install failed)"
         fi
 
         run_cmd "LDAP nmap scripts" "$N/ldap_nmap.txt" \
@@ -824,7 +1011,7 @@ if should_run 10; then
     V="$OUTPUT_DIR/vulns"
 
     # Nuclei full scan
-    if has_cmd nuclei; then
+    if ensure_cmd nuclei; then
         NUCLEI_TARGETS=""
         # Build target list: web URLs + raw IP
         for p in 80 443 8080 8443; do
@@ -840,7 +1027,7 @@ if should_run 10; then
                 "nuclei -l '$V/nuclei_targets.txt' -t cves/ -t misconfigurations/ -t exposures/ -severity critical,high,medium -nc -o '$V/nuclei_results.txt' 2>&1"
         fi
     else
-        log_skip "Nuclei scan (nuclei not installed)"
+        log_skip "Nuclei scan (nuclei — install failed)"
     fi
 
     # Nmap vuln scripts across all open ports
@@ -850,7 +1037,7 @@ if should_run 10; then
     fi
 
     # searchsploit correlation from detailed scan
-    if has_cmd searchsploit && [ -f "$OUTPUT_DIR/ports/detailed_scan.nmap" ]; then
+    if ensure_cmd searchsploit && [ -f "$OUTPUT_DIR/ports/detailed_scan.nmap" ]; then
         log_step "Correlating service versions with searchsploit"
         if ! $DRY_RUN; then
             grep -E "^\d+/tcp\s+open" "$OUTPUT_DIR/ports/detailed_scan.nmap" 2>/dev/null | while IFS= read -r line; do
@@ -864,7 +1051,7 @@ if should_run 10; then
             log_ok "searchsploit correlation → $V/searchsploit_results.txt"
         fi
     else
-        log_skip "searchsploit correlation (searchsploit not installed or no scan data)"
+        log_skip "searchsploit correlation (searchsploit unavailable or no scan data)"
     fi
 fi
 
