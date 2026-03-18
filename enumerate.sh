@@ -1,0 +1,1003 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# enumerate.sh — Automated server enumeration chain
+#
+# Implements the 11-step attack chain from enumeration.md against a single
+# target. Only use on systems you own or have explicit written authorization
+# to test.
+#
+# Usage:
+#   sudo ./enumerate.sh <TARGET_IP> [OPTIONS]
+#
+# Options:
+#   -d, --domain DOMAIN     Domain name for passive recon (default: reverse DNS)
+#   -o, --output DIR        Output directory (default: ./enum_<IP>_<timestamp>)
+#   -s, --steps STEPS       Comma-separated steps to run: 1-11 or "all" (default: all)
+#   -t, --timing TIMING     nmap timing template 0-5 (default: 4)
+#   -w, --wordlist PATH     Directory wordlist override
+#   --skip-udp              Skip UDP scanning (slow)
+#   --skip-bruteforce       Skip directory/vhost brute-forcing
+#   --dry-run               Print commands without executing
+#   -h, --help              Show this help message
+#
+# Requirements: nmap (minimum). Optional tools are detected and skipped
+#               gracefully if not installed.
+# ==============================================================================
+
+set -euo pipefail
+
+# =============================================================================
+# Color and formatting
+# =============================================================================
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# =============================================================================
+# Defaults
+# =============================================================================
+TARGET=""
+DOMAIN=""
+OUTPUT_DIR=""
+STEPS="all"
+TIMING=4
+WORDLIST_DIR="/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt"
+WORDLIST_USERS="/usr/share/seclists/Usernames/top-usernames-shortlist.txt"
+WORDLIST_SNMP="/usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt"
+WORDLIST_VHOSTS="/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+SKIP_UDP=false
+SKIP_BRUTEFORCE=false
+DRY_RUN=false
+OPEN_TCP_PORTS=""
+OPEN_UDP_PORTS=""
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+# =============================================================================
+# Functions
+# =============================================================================
+
+usage() {
+    sed -n '2,/^# =====/{ /^# =====/d; s/^# \?//; p }' "$0"
+    exit 0
+}
+
+log_banner() {
+    echo ""
+    echo -e "${BOLD}${BLUE}══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}${BLUE}  $1${NC}"
+    echo -e "${BOLD}${BLUE}══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+}
+
+log_step() {
+    echo -e "${CYAN}[*]${NC} $1"
+}
+
+log_ok() {
+    echo -e "${GREEN}[+]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[-]${NC} $1"
+}
+
+log_skip() {
+    echo -e "${YELLOW}[SKIP]${NC} $1"
+}
+
+# Check if a command exists; return 0/1
+has_cmd() {
+    command -v "$1" &>/dev/null
+}
+
+# Run a command, log it, handle dry-run mode. Captures output to a file.
+# Usage: run_cmd <description> <output_file> <command...>
+run_cmd() {
+    local desc="$1"
+    local outfile="$2"
+    shift 2
+
+    log_step "$desc"
+
+    if $DRY_RUN; then
+        echo -e "  ${YELLOW}[DRY-RUN]${NC} $*"
+        return 0
+    fi
+
+    if eval "$@" >> "$outfile" 2>&1; then
+        log_ok "Done → $outfile"
+    else
+        local rc=$?
+        # Non-zero exit is common for scanning tools (e.g., no results found)
+        if [ $rc -eq 1 ]; then
+            log_warn "Completed with warnings → $outfile"
+        else
+            log_warn "Exited with code $rc → $outfile"
+        fi
+    fi
+    return 0
+}
+
+# Run a command only if the tool is installed; skip otherwise.
+# Usage: run_if <tool_name> <description> <output_file> <command...>
+run_if() {
+    local tool="$1"
+    local desc="$2"
+    local outfile="$3"
+    shift 3
+
+    if has_cmd "$tool"; then
+        run_cmd "$desc" "$outfile" "$@"
+    else
+        log_skip "$desc (${tool} not installed)"
+    fi
+}
+
+# Check if a port is in the open TCP ports list
+port_open() {
+    local port="$1"
+    echo ",$OPEN_TCP_PORTS," | grep -q ",$port,"
+}
+
+# Check if a UDP port is in the open UDP ports list
+udp_port_open() {
+    local port="$1"
+    echo ",$OPEN_UDP_PORTS," | grep -q ",$port,"
+}
+
+# Check if a step should run
+should_run() {
+    local step="$1"
+    if [ "$STEPS" = "all" ]; then
+        return 0
+    fi
+    echo ",$STEPS," | grep -q ",$step,"
+}
+
+# Extract open TCP ports from nmap gnmap output
+extract_tcp_ports() {
+    local gnmap_file="$1"
+    if [ -f "$gnmap_file" ]; then
+        grep -oP '\d+/open/tcp' "$gnmap_file" | cut -d/ -f1 | sort -un | tr '\n' ',' | sed 's/,$//'
+    fi
+}
+
+# Extract open UDP ports from nmap gnmap output
+extract_udp_ports() {
+    local gnmap_file="$1"
+    if [ -f "$gnmap_file" ]; then
+        grep -oP '\d+/open/udp' "$gnmap_file" | cut -d/ -f1 | sort -un | tr '\n' ',' | sed 's/,$//'
+    fi
+}
+
+# =============================================================================
+# Argument parsing
+# =============================================================================
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -d|--domain)    DOMAIN="$2"; shift 2 ;;
+        -o|--output)    OUTPUT_DIR="$2"; shift 2 ;;
+        -s|--steps)     STEPS="$2"; shift 2 ;;
+        -t|--timing)    TIMING="$2"; shift 2 ;;
+        -w|--wordlist)  WORDLIST_DIR="$2"; shift 2 ;;
+        --skip-udp)     SKIP_UDP=true; shift ;;
+        --skip-bruteforce) SKIP_BRUTEFORCE=true; shift ;;
+        --dry-run)      DRY_RUN=true; shift ;;
+        -h|--help)      usage ;;
+        -*)             log_error "Unknown option: $1"; usage ;;
+        *)
+            if [ -z "$TARGET" ]; then
+                TARGET="$1"
+            else
+                log_error "Unexpected argument: $1"
+                usage
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$TARGET" ]; then
+    log_error "No target specified."
+    echo ""
+    usage
+fi
+
+# =============================================================================
+# Setup
+# =============================================================================
+
+# Resolve domain from reverse DNS if not provided
+if [ -z "$DOMAIN" ]; then
+    DOMAIN=$(dig +short -x "$TARGET" 2>/dev/null | sed 's/\.$//' | awk -F. '{print $(NF-1)"."$NF}')
+    if [ -z "$DOMAIN" ]; then
+        DOMAIN="$TARGET"
+        log_warn "No domain resolved from reverse DNS. Using IP as domain. Pass -d to set manually."
+    else
+        log_ok "Resolved domain from rDNS: $DOMAIN"
+    fi
+fi
+
+# Output directory
+if [ -z "$OUTPUT_DIR" ]; then
+    OUTPUT_DIR="./enum_${TARGET}_${TIMESTAMP}"
+fi
+
+mkdir -p "$OUTPUT_DIR"/{passive,ports,web,auth,smb,mail,snmp,db,nfs,vulns,report}
+
+# Root check
+if [ "$(id -u)" -ne 0 ] && ! $DRY_RUN; then
+    log_warn "Not running as root. SYN scans, OS detection, and some tools will fail."
+    log_warn "Re-run with: sudo $0 $TARGET $*"
+    echo ""
+fi
+
+# =============================================================================
+# Pre-flight: tool detection
+# =============================================================================
+log_banner "Pre-flight Check"
+
+REQUIRED_TOOLS=(nmap)
+OPTIONAL_TOOLS=(
+    amass curl dig whois jq                                          # passive
+    whatweb testssl.sh feroxbuster gobuster ffuf nikto sslyze        # web
+    ssh-audit                                                        # auth
+    enum4linux-ng smbclient crackmapexec                             # smb
+    smtp-user-enum                                                   # mail
+    onesixtyone snmpwalk snmp-check                                  # snmp
+    mysql psql redis-cli mongosh                                     # db
+    rpcinfo showmount ldapsearch                                     # nfs/ldap
+    nuclei searchsploit sqlmap                                       # vulns
+)
+
+for tool in "${REQUIRED_TOOLS[@]}"; do
+    if has_cmd "$tool"; then
+        log_ok "$tool found"
+    else
+        log_error "$tool is REQUIRED but not installed. Aborting."
+        exit 1
+    fi
+done
+
+MISSING_COUNT=0
+for tool in "${OPTIONAL_TOOLS[@]}"; do
+    if has_cmd "$tool"; then
+        echo -e "  ${GREEN}✓${NC} $tool"
+    else
+        echo -e "  ${YELLOW}✗${NC} $tool (will skip related checks)"
+        ((MISSING_COUNT++)) || true
+    fi
+done
+
+if [ "$MISSING_COUNT" -gt 0 ]; then
+    echo ""
+    log_warn "$MISSING_COUNT optional tools missing. Related steps will be skipped."
+fi
+
+echo ""
+log_step "Target:  $TARGET"
+log_step "Domain:  $DOMAIN"
+log_step "Output:  $OUTPUT_DIR"
+log_step "Timing:  T${TIMING}"
+log_step "Steps:   $STEPS"
+echo ""
+
+# Write run metadata
+cat > "$OUTPUT_DIR/report/run_info.txt" <<EOF
+Enumeration Run
+===============
+Target:     $TARGET
+Domain:     $DOMAIN
+Output:     $OUTPUT_DIR
+Timing:     T${TIMING}
+Steps:      $STEPS
+Started:    $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+Skip UDP:   $SKIP_UDP
+Skip Brute: $SKIP_BRUTEFORCE
+Dry Run:    $DRY_RUN
+Run As:     $(whoami)
+EOF
+
+# =============================================================================
+# STEP 1: Passive Intelligence Gathering
+# =============================================================================
+if should_run 1; then
+    log_banner "Step 1/11: Passive Intelligence Gathering"
+
+    P="$OUTPUT_DIR/passive"
+
+    run_if whois "WHOIS lookup on domain" "$P/whois_domain.txt" \
+        "whois '$DOMAIN'"
+
+    run_if whois "WHOIS lookup on IP" "$P/whois_ip.txt" \
+        "whois '$TARGET'"
+
+    run_if dig "DNS ANY records" "$P/dns_any.txt" \
+        "dig any '$DOMAIN' +noall +answer"
+
+    run_if dig "DNS TXT records" "$P/dns_txt.txt" \
+        "dig txt '$DOMAIN' +noall +answer"
+
+    run_if dig "DNS MX records" "$P/dns_mx.txt" \
+        "dig mx '$DOMAIN' +noall +answer"
+
+    run_if dig "DNS NS records" "$P/dns_ns.txt" \
+        "dig ns '$DOMAIN' +noall +answer"
+
+    # Zone transfer attempt against each name server
+    if has_cmd dig; then
+        log_step "Attempting zone transfers"
+        if ! $DRY_RUN; then
+            for ns in $(dig ns "$DOMAIN" +short 2>/dev/null); do
+                log_step "  Zone transfer via $ns"
+                dig axfr "$DOMAIN" "@$ns" >> "$P/zone_transfer.txt" 2>&1 || true
+            done
+            if [ -s "$P/zone_transfer.txt" ]; then
+                log_ok "Zone transfer results → $P/zone_transfer.txt"
+            else
+                log_warn "Zone transfers failed (expected — most servers block this)"
+            fi
+        fi
+    fi
+
+    run_if amass "Passive subdomain enumeration (amass)" "$P/amass_subs.txt" \
+        "amass enum -passive -d '$DOMAIN' -timeout 5"
+
+    # Certificate transparency via crt.sh
+    if has_cmd curl && has_cmd jq; then
+        run_cmd "Certificate transparency lookup (crt.sh)" "$P/ct_subs.txt" \
+            "curl -s 'https://crt.sh/?q=%25.$DOMAIN&output=json' | jq -r '.[].name_value' 2>/dev/null | sort -u"
+    fi
+
+    # Combine and deduplicate subdomains
+    if ! $DRY_RUN; then
+        cat "$P"/amass_subs.txt "$P"/ct_subs.txt 2>/dev/null | \
+            grep -v "^$" | sort -u > "$P/all_subs.txt" 2>/dev/null || true
+        local_count=$(wc -l < "$P/all_subs.txt" 2>/dev/null || echo 0)
+        log_ok "Combined ${local_count} unique subdomains → $P/all_subs.txt"
+
+        # Resolve subdomains
+        if [ -s "$P/all_subs.txt" ] && has_cmd dig; then
+            log_step "Resolving discovered subdomains"
+            while IFS= read -r sub; do
+                ip=$(dig +short "$sub" 2>/dev/null | head -1)
+                [ -n "$ip" ] && echo "$sub -> $ip"
+            done < "$P/all_subs.txt" > "$P/resolved_hosts.txt" 2>/dev/null || true
+            log_ok "Resolved hosts → $P/resolved_hosts.txt"
+        fi
+    fi
+fi
+
+# =============================================================================
+# STEP 2: Active Host Discovery and Port Scanning
+# =============================================================================
+if should_run 2; then
+    log_banner "Step 2/11: Port Scanning"
+
+    S="$OUTPUT_DIR/ports"
+
+    # Full TCP SYN scan
+    run_cmd "TCP SYN scan — all 65535 ports" "$S/tcp_scan.log" \
+        "nmap -sS -p- --min-rate 10000 -T${TIMING} '$TARGET' -oA '$S/tcp_all_ports'"
+
+    # Extract open ports
+    if ! $DRY_RUN; then
+        OPEN_TCP_PORTS=$(extract_tcp_ports "$S/tcp_all_ports.gnmap")
+        if [ -n "$OPEN_TCP_PORTS" ]; then
+            log_ok "Open TCP ports: $OPEN_TCP_PORTS"
+            echo "$OPEN_TCP_PORTS" > "$S/open_tcp_ports.txt"
+        else
+            log_warn "No open TCP ports found"
+        fi
+    fi
+
+    # Detailed service scan on open ports
+    if [ -n "$OPEN_TCP_PORTS" ] || $DRY_RUN; then
+        run_cmd "Service version detection + NSE scripts" "$S/detailed_scan.log" \
+            "nmap -sV -sC -O -p '${OPEN_TCP_PORTS:-1-1000}' -T${TIMING} '$TARGET' -oA '$S/detailed_scan'"
+    fi
+
+    # UDP scan
+    if ! $SKIP_UDP; then
+        run_cmd "UDP scan — top 50 ports" "$S/udp_scan.log" \
+            "nmap -sU --top-ports 50 -T${TIMING} '$TARGET' -oA '$S/udp_scan'"
+
+        if ! $DRY_RUN; then
+            OPEN_UDP_PORTS=$(extract_udp_ports "$S/udp_scan.gnmap")
+            if [ -n "$OPEN_UDP_PORTS" ]; then
+                log_ok "Open UDP ports: $OPEN_UDP_PORTS"
+                echo "$OPEN_UDP_PORTS" > "$S/open_udp_ports.txt"
+            fi
+        fi
+    else
+        log_skip "UDP scan (--skip-udp)"
+    fi
+
+    # OS fingerprinting
+    run_cmd "OS fingerprinting" "$S/os_fingerprint.log" \
+        "nmap -O --osscan-guess -T${TIMING} '$TARGET' -oA '$S/os_fingerprint'"
+fi
+
+# Reload ports from disk if running selective steps
+if [ -z "$OPEN_TCP_PORTS" ] && [ -f "$OUTPUT_DIR/ports/open_tcp_ports.txt" ]; then
+    OPEN_TCP_PORTS=$(cat "$OUTPUT_DIR/ports/open_tcp_ports.txt")
+fi
+if [ -z "$OPEN_UDP_PORTS" ] && [ -f "$OUTPUT_DIR/ports/open_udp_ports.txt" ]; then
+    OPEN_UDP_PORTS=$(cat "$OUTPUT_DIR/ports/open_udp_ports.txt")
+fi
+
+# =============================================================================
+# STEP 3: Web Service Enumeration (80/443)
+# =============================================================================
+if should_run 3; then
+    log_banner "Step 3/11: Web Service Enumeration"
+
+    W="$OUTPUT_DIR/web"
+
+    # Determine which web ports are open
+    WEB_PORTS=""
+    for p in 80 443 8080 8443 8000 8888 3000 5000 9443; do
+        if port_open "$p"; then
+            WEB_PORTS="${WEB_PORTS:+$WEB_PORTS,}$p"
+        fi
+    done
+
+    if [ -z "$WEB_PORTS" ] && ! $DRY_RUN; then
+        log_skip "No web ports detected in open ports list"
+    else
+        # Determine base URL (prefer HTTPS)
+        if port_open 443 || $DRY_RUN; then
+            BASE_URL="https://$TARGET"
+        else
+            BASE_URL="http://$TARGET"
+        fi
+
+        run_if whatweb "Technology fingerprinting (whatweb)" "$W/whatweb.txt" \
+            "whatweb -a 3 '$BASE_URL' 2>&1"
+
+        # TLS audit (only if 443 is open)
+        if port_open 443 || $DRY_RUN; then
+            run_if testssl.sh "TLS configuration audit" "$W/tls_audit.txt" \
+                "testssl.sh --quiet --color 0 '$TARGET'"
+
+            run_if sslyze "TLS scan (sslyze)" "$W/sslyze.txt" \
+                "sslyze '$TARGET'"
+        fi
+
+        # Sensitive file checks
+        if has_cmd curl && ! $DRY_RUN; then
+            log_step "Checking for sensitive file exposure"
+            SENSITIVE_PATHS=(
+                "/.git/HEAD" "/.env" "/robots.txt" "/sitemap.xml"
+                "/.DS_Store" "/server-status" "/server-info"
+                "/wp-config.php.bak" "/web.config" "/.htaccess"
+                "/crossdomain.xml" "/clientaccesspolicy.xml"
+                "/.well-known/security.txt" "/phpinfo.php"
+                "/elmah.axd" "/trace.axd"
+            )
+            for path in "${SENSITIVE_PATHS[@]}"; do
+                code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 "${BASE_URL}${path}" 2>/dev/null || echo "000")
+                status=""
+                if [ "$code" = "200" ]; then
+                    status="${GREEN}200 FOUND${NC}"
+                elif [ "$code" = "403" ]; then
+                    status="${YELLOW}403 FORBIDDEN${NC}"
+                else
+                    status="$code"
+                fi
+                echo -e "  $path → $status"
+                echo "$path → $code" >> "$W/sensitive_files.txt"
+            done
+        fi
+
+        # Directory brute-force
+        if ! $SKIP_BRUTEFORCE; then
+            if has_cmd feroxbuster; then
+                run_cmd "Directory brute-force (feroxbuster)" "$W/feroxbuster.log" \
+                    "feroxbuster -u '$BASE_URL' -w '$WORDLIST_DIR' -x php,html,txt,bak,json,xml -t 20 --rate-limit 100 -k --no-state -q -o '$W/ferox_dirs.txt' 2>&1"
+            elif has_cmd gobuster; then
+                run_cmd "Directory brute-force (gobuster)" "$W/gobuster.txt" \
+                    "gobuster dir -u '$BASE_URL' -w '$WORDLIST_DIR' -x php,html,txt,bak -t 20 -k -q 2>&1"
+            else
+                log_skip "Directory brute-force (feroxbuster/gobuster not installed)"
+            fi
+
+            # Virtual host enumeration
+            if [ -f "$WORDLIST_VHOSTS" ]; then
+                run_if ffuf "Virtual host enumeration" "$W/vhost_results.txt" \
+                    "ffuf -u '$BASE_URL' -H 'Host: FUZZ.$DOMAIN' -w '$WORDLIST_VHOSTS' -fc 301,302,404 -mc all -fs 0 -o '$W/vhost_results.json' 2>&1"
+            fi
+        else
+            log_skip "Directory and vhost brute-force (--skip-bruteforce)"
+        fi
+
+        # Nikto
+        run_if nikto "Web vulnerability scan (nikto)" "$W/nikto.txt" \
+            "nikto -h '$BASE_URL' -nointeractive -maxtime 300s -output '$W/nikto_results.txt' 2>&1"
+
+        # Nuclei web-specific
+        run_if nuclei "Web template scan (nuclei)" "$W/nuclei_web.txt" \
+            "nuclei -u '$BASE_URL' -t http/ -t misconfigurations/ -t exposures/ -severity critical,high,medium -nc -o '$W/nuclei_web_results.txt' 2>&1"
+    fi
+fi
+
+# =============================================================================
+# STEP 4: Authentication Service Enumeration (SSH, FTP, RDP)
+# =============================================================================
+if should_run 4; then
+    log_banner "Step 4/11: Authentication Service Enumeration"
+
+    A="$OUTPUT_DIR/auth"
+
+    # SSH
+    if port_open 22 || $DRY_RUN; then
+        run_if ssh-audit "SSH configuration audit" "$A/ssh_audit.txt" \
+            "ssh-audit '$TARGET'"
+
+        run_cmd "SSH nmap scripts" "$A/ssh_nmap.txt" \
+            "nmap --script ssh2-enum-algos,ssh-auth-methods -p 22 -T${TIMING} '$TARGET'"
+    else
+        log_skip "SSH (port 22 not open)"
+    fi
+
+    # FTP
+    if port_open 21 || $DRY_RUN; then
+        run_cmd "FTP enumeration (anonymous check)" "$A/ftp_nmap.txt" \
+            "nmap --script ftp-anon,ftp-syst,ftp-vsftpd-backdoor -p 21 -T${TIMING} '$TARGET'"
+    else
+        log_skip "FTP (port 21 not open)"
+    fi
+
+    # RDP
+    if port_open 3389 || $DRY_RUN; then
+        run_cmd "RDP enumeration" "$A/rdp_nmap.txt" \
+            "nmap --script rdp-enum-encryption,rdp-ntlm-info -p 3389 -T${TIMING} '$TARGET'"
+    else
+        log_skip "RDP (port 3389 not open)"
+    fi
+
+    # Telnet
+    if port_open 23; then
+        run_cmd "Telnet banner grab" "$A/telnet_nmap.txt" \
+            "nmap --script telnet-ntlm-info -p 23 -T${TIMING} '$TARGET'"
+    fi
+fi
+
+# =============================================================================
+# STEP 5: SMB / Windows Enumeration (139/445)
+# =============================================================================
+if should_run 5; then
+    log_banner "Step 5/11: SMB / Windows Enumeration"
+
+    S="$OUTPUT_DIR/smb"
+
+    if port_open 445 || port_open 139 || $DRY_RUN; then
+        run_if enum4linux-ng "Full SMB enumeration (enum4linux-ng)" "$S/enum4linux.txt" \
+            "enum4linux-ng -A '$TARGET'"
+
+        run_if smbclient "List SMB shares (null session)" "$S/smbclient.txt" \
+            "smbclient -L '//$TARGET' -N"
+
+        run_if crackmapexec "SMB share enumeration (crackmapexec)" "$S/cme_shares.txt" \
+            "crackmapexec smb '$TARGET' --shares -u '' -p ''"
+
+        run_cmd "SMB vulnerability scan (nmap)" "$S/smb_vulns.txt" \
+            "nmap --script smb-vuln-ms17-010,smb-vuln-ms08-067,smb-vuln-cve-2020-0796,smb-enum-shares,smb-enum-users -p 445 -T${TIMING} '$TARGET'"
+
+        run_if crackmapexec "RID brute-force (user enumeration)" "$S/rid_brute.txt" \
+            "crackmapexec smb '$TARGET' -u '' -p '' --rid-brute"
+    else
+        log_skip "SMB (ports 139/445 not open)"
+    fi
+fi
+
+# =============================================================================
+# STEP 6: Mail Enumeration (SMTP 25/465/587)
+# =============================================================================
+if should_run 6; then
+    log_banner "Step 6/11: Mail Service Enumeration"
+
+    M="$OUTPUT_DIR/mail"
+
+    if port_open 25 || port_open 465 || port_open 587 || $DRY_RUN; then
+        # Determine SMTP port
+        SMTP_PORT=25
+        port_open 25 && SMTP_PORT=25
+        port_open 587 && SMTP_PORT=587
+
+        if has_cmd smtp-user-enum && [ -f "$WORDLIST_USERS" ]; then
+            run_cmd "SMTP user enumeration (VRFY)" "$M/smtp_vrfy.txt" \
+                "smtp-user-enum -M VRFY -U '$WORDLIST_USERS' -t '$TARGET' -p '$SMTP_PORT'"
+
+            run_cmd "SMTP user enumeration (RCPT TO)" "$M/smtp_rcpt.txt" \
+                "smtp-user-enum -M RCPT -U '$WORDLIST_USERS' -t '$TARGET' -p '$SMTP_PORT'"
+        else
+            log_skip "SMTP user enumeration (smtp-user-enum or wordlist not available)"
+        fi
+
+        run_cmd "SMTP open relay and banner" "$M/smtp_nmap.txt" \
+            "nmap --script smtp-open-relay,smtp-commands,smtp-ntlm-info -p 25,465,587 -T${TIMING} '$TARGET'"
+    else
+        log_skip "SMTP (ports 25/465/587 not open)"
+    fi
+fi
+
+# =============================================================================
+# STEP 7: SNMP Enumeration (161/UDP)
+# =============================================================================
+if should_run 7; then
+    log_banner "Step 7/11: SNMP Enumeration"
+
+    SN="$OUTPUT_DIR/snmp"
+    COMMUNITY_STRING=""
+
+    if udp_port_open 161 || $DRY_RUN; then
+        # Brute-force community strings
+        if has_cmd onesixtyone && [ -f "$WORDLIST_SNMP" ]; then
+            run_cmd "SNMP community string brute-force" "$SN/onesixtyone.txt" \
+                "onesixtyone -c '$WORDLIST_SNMP' '$TARGET'"
+
+            # Try to extract a found community string
+            if ! $DRY_RUN && [ -s "$SN/onesixtyone.txt" ]; then
+                COMMUNITY_STRING=$(grep -oP '\[\K[^\]]+' "$SN/onesixtyone.txt" | head -1 || echo "public")
+                log_ok "Found community string: $COMMUNITY_STRING"
+            fi
+        fi
+
+        [ -z "$COMMUNITY_STRING" ] && COMMUNITY_STRING="public"
+
+        run_if snmpwalk "SNMP full MIB walk" "$SN/snmpwalk_full.txt" \
+            "snmpwalk -v2c -c '$COMMUNITY_STRING' '$TARGET' 2>&1"
+
+        # Targeted OID walks
+        if has_cmd snmpwalk && ! $DRY_RUN; then
+            log_step "Targeted SNMP OID walks"
+            declare -A OIDS=(
+                ["system_info"]="1.3.6.1.2.1.1"
+                ["running_processes"]="1.3.6.1.2.1.25.4.2"
+                ["tcp_connections"]="1.3.6.1.2.1.6.13"
+                ["installed_software"]="1.3.6.1.2.1.25.6.3"
+                ["interfaces"]="1.3.6.1.2.1.2.2"
+            )
+            for name in "${!OIDS[@]}"; do
+                snmpwalk -v2c -c "$COMMUNITY_STRING" "$TARGET" "${OIDS[$name]}" \
+                    > "$SN/snmp_${name}.txt" 2>&1 || true
+            done
+            log_ok "OID walk results → $SN/snmp_*.txt"
+        fi
+
+        run_if snmp-check "Automated SNMP enumeration" "$SN/snmpcheck.txt" \
+            "snmp-check '$TARGET' -c '$COMMUNITY_STRING'"
+    else
+        log_skip "SNMP (UDP port 161 not detected as open)"
+        log_warn "UDP scanning may have missed it. Run manually: snmpwalk -v2c -c public $TARGET"
+    fi
+fi
+
+# =============================================================================
+# STEP 8: Database Enumeration
+# =============================================================================
+if should_run 8; then
+    log_banner "Step 8/11: Database Enumeration"
+
+    D="$OUTPUT_DIR/db"
+
+    # MySQL (3306)
+    if port_open 3306 || $DRY_RUN; then
+        run_cmd "MySQL nmap scripts" "$D/mysql_nmap.txt" \
+            "nmap --script mysql-info,mysql-enum,mysql-empty-password -p 3306 -T${TIMING} '$TARGET'"
+
+        run_if mysql "MySQL anonymous/root access check" "$D/mysql_access.txt" \
+            "mysql -h '$TARGET' -u root --password='' -e 'SELECT user,host FROM mysql.user; SHOW DATABASES;' 2>&1"
+    else
+        log_skip "MySQL (port 3306 not open)"
+    fi
+
+    # PostgreSQL (5432)
+    if port_open 5432 || $DRY_RUN; then
+        run_cmd "PostgreSQL nmap scripts" "$D/pgsql_nmap.txt" \
+            "nmap --script pgsql-brute -p 5432 -T${TIMING} '$TARGET'"
+
+        run_if psql "PostgreSQL default credentials check" "$D/pgsql_access.txt" \
+            "PGPASSWORD='' psql -h '$TARGET' -U postgres -c '\\l' 2>&1"
+    else
+        log_skip "PostgreSQL (port 5432 not open)"
+    fi
+
+    # MSSQL (1433)
+    if port_open 1433 || $DRY_RUN; then
+        run_cmd "MSSQL nmap scripts" "$D/mssql_nmap.txt" \
+            "nmap --script ms-sql-info,ms-sql-ntlm-info,ms-sql-empty-password -p 1433 -T${TIMING} '$TARGET'"
+    else
+        log_skip "MSSQL (port 1433 not open)"
+    fi
+
+    # Redis (6379)
+    if port_open 6379 || $DRY_RUN; then
+        run_cmd "Redis nmap scripts" "$D/redis_nmap.txt" \
+            "nmap --script redis-info -p 6379 -T${TIMING} '$TARGET'"
+
+        if has_cmd redis-cli && ! $DRY_RUN; then
+            log_step "Redis unauthenticated access check"
+            {
+                echo "=== INFO server ==="
+                redis-cli -h "$TARGET" INFO server 2>&1 || true
+                echo ""
+                echo "=== CONFIG GET dir ==="
+                redis-cli -h "$TARGET" CONFIG GET dir 2>&1 || true
+                echo ""
+                echo "=== DBSIZE ==="
+                redis-cli -h "$TARGET" DBSIZE 2>&1 || true
+            } > "$D/redis_access.txt"
+            log_ok "Done → $D/redis_access.txt"
+        fi
+    else
+        log_skip "Redis (port 6379 not open)"
+    fi
+
+    # MongoDB (27017)
+    if port_open 27017 || $DRY_RUN; then
+        run_cmd "MongoDB nmap scripts" "$D/mongo_nmap.txt" \
+            "nmap --script mongodb-info,mongodb-databases -p 27017 -T${TIMING} '$TARGET'"
+
+        run_if mongosh "MongoDB unauthenticated access check" "$D/mongo_access.txt" \
+            "mongosh --host '$TARGET' --quiet --eval 'db.adminCommand(\"listDatabases\")' 2>&1"
+    else
+        log_skip "MongoDB (port 27017 not open)"
+    fi
+fi
+
+# =============================================================================
+# STEP 9: NFS, RPC, and LDAP Enumeration
+# =============================================================================
+if should_run 9; then
+    log_banner "Step 9/11: NFS / RPC / LDAP Enumeration"
+
+    N="$OUTPUT_DIR/nfs"
+
+    # RPC (111)
+    if port_open 111 || $DRY_RUN; then
+        run_if rpcinfo "RPC service enumeration" "$N/rpcinfo.txt" \
+            "rpcinfo -p '$TARGET'"
+
+        run_cmd "NFS nmap scripts" "$N/nfs_nmap.txt" \
+            "nmap --script nfs-ls,nfs-showmount,nfs-statfs -p 111,2049 -T${TIMING} '$TARGET'"
+    else
+        log_skip "RPC (port 111 not open)"
+    fi
+
+    # NFS (2049)
+    if port_open 2049 || port_open 111 || $DRY_RUN; then
+        run_if showmount "NFS export list" "$N/showmount.txt" \
+            "showmount -e '$TARGET'"
+    fi
+
+    # LDAP (389/636)
+    if port_open 389 || port_open 636 || $DRY_RUN; then
+        LDAP_PROTO="ldap"
+        LDAP_PORT=389
+        if port_open 636; then
+            LDAP_PROTO="ldaps"
+            LDAP_PORT=636
+        fi
+
+        if has_cmd ldapsearch; then
+            run_cmd "LDAP naming contexts" "$N/ldap_base.txt" \
+                "ldapsearch -x -H '${LDAP_PROTO}://$TARGET:${LDAP_PORT}' -b '' -s base namingContexts 2>&1"
+
+            # Extract base DN and do a broader search
+            if ! $DRY_RUN; then
+                BASE_DN=$(grep -oP 'namingContexts: \K.*' "$N/ldap_base.txt" | head -1 || echo "")
+                if [ -n "$BASE_DN" ]; then
+                    run_cmd "LDAP full directory dump" "$N/ldap_dump.txt" \
+                        "ldapsearch -x -H '${LDAP_PROTO}://$TARGET:${LDAP_PORT}' -b '$BASE_DN' '(objectClass=*)' 2>&1"
+
+                    run_cmd "LDAP user enumeration" "$N/ldap_users.txt" \
+                        "ldapsearch -x -H '${LDAP_PROTO}://$TARGET:${LDAP_PORT}' -b '$BASE_DN' '(objectClass=person)' cn sAMAccountName mail 2>&1"
+                fi
+            fi
+        else
+            log_skip "LDAP enumeration (ldapsearch not installed)"
+        fi
+
+        run_cmd "LDAP nmap scripts" "$N/ldap_nmap.txt" \
+            "nmap --script ldap-rootdse,ldap-search -p 389,636 -T${TIMING} '$TARGET'"
+    else
+        log_skip "LDAP (ports 389/636 not open)"
+    fi
+fi
+
+# =============================================================================
+# STEP 10: Automated Vulnerability Scanning
+# =============================================================================
+if should_run 10; then
+    log_banner "Step 10/11: Vulnerability Scanning"
+
+    V="$OUTPUT_DIR/vulns"
+
+    # Nuclei full scan
+    if has_cmd nuclei; then
+        NUCLEI_TARGETS=""
+        # Build target list: web URLs + raw IP
+        for p in 80 443 8080 8443; do
+            if port_open "$p"; then
+                proto="http"
+                [ "$p" = "443" ] || [ "$p" = "8443" ] && proto="https"
+                NUCLEI_TARGETS="${NUCLEI_TARGETS}${proto}://${TARGET}:${p}\n"
+            fi
+        done
+        if [ -n "$NUCLEI_TARGETS" ]; then
+            echo -e "$NUCLEI_TARGETS" > "$V/nuclei_targets.txt"
+            run_cmd "Nuclei vulnerability scan" "$V/nuclei.log" \
+                "nuclei -l '$V/nuclei_targets.txt' -t cves/ -t misconfigurations/ -t exposures/ -severity critical,high,medium -nc -o '$V/nuclei_results.txt' 2>&1"
+        fi
+    else
+        log_skip "Nuclei scan (nuclei not installed)"
+    fi
+
+    # Nmap vuln scripts across all open ports
+    if [ -n "$OPEN_TCP_PORTS" ] || $DRY_RUN; then
+        run_cmd "Nmap vulnerability scripts" "$V/nmap_vuln.log" \
+            "nmap --script vuln -p '${OPEN_TCP_PORTS:-1-1000}' -T${TIMING} '$TARGET' -oA '$V/vuln_scan'"
+    fi
+
+    # searchsploit correlation from detailed scan
+    if has_cmd searchsploit && [ -f "$OUTPUT_DIR/ports/detailed_scan.nmap" ]; then
+        log_step "Correlating service versions with searchsploit"
+        if ! $DRY_RUN; then
+            grep -E "^\d+/tcp\s+open" "$OUTPUT_DIR/ports/detailed_scan.nmap" 2>/dev/null | while IFS= read -r line; do
+                service=$(echo "$line" | awk '{for(i=3;i<=NF;i++) printf $i " "; print ""}' | sed 's/[[:space:]]*$//')
+                if [ -n "$service" ]; then
+                    echo "=== $service ===" >> "$V/searchsploit_results.txt"
+                    searchsploit "$service" >> "$V/searchsploit_results.txt" 2>&1 || true
+                    echo "" >> "$V/searchsploit_results.txt"
+                fi
+            done
+            log_ok "searchsploit correlation → $V/searchsploit_results.txt"
+        fi
+    else
+        log_skip "searchsploit correlation (searchsploit not installed or no scan data)"
+    fi
+fi
+
+# =============================================================================
+# STEP 11: Consolidate and Report
+# =============================================================================
+if should_run 11; then
+    log_banner "Step 11/11: Consolidation and Reporting"
+
+    R="$OUTPUT_DIR/report"
+
+    if $DRY_RUN; then
+        log_step "[DRY-RUN] Would generate summary report"
+    else
+        # Service summary
+        log_step "Generating service summary"
+        if [ -f "$OUTPUT_DIR/ports/detailed_scan.nmap" ]; then
+            grep -E "^\d+/(tcp|udp)\s+open" "$OUTPUT_DIR/ports/detailed_scan.nmap" | \
+                sort -t/ -k1 -n > "$R/service_summary.txt" 2>/dev/null || true
+            log_ok "Service summary → $R/service_summary.txt"
+        fi
+
+        # Vulnerability severity summary
+        log_step "Generating finding severity summary"
+        {
+            echo "============================================"
+            echo "  ENUMERATION SUMMARY REPORT"
+            echo "  Target: $TARGET ($DOMAIN)"
+            echo "  Date:   $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+            echo "============================================"
+            echo ""
+
+            echo "--- Open TCP Ports ---"
+            if [ -n "$OPEN_TCP_PORTS" ]; then
+                echo "$OPEN_TCP_PORTS" | tr ',' '\n' | while read -r port; do
+                    echo "  $port/tcp"
+                done
+            else
+                echo "  (none detected or scan not run)"
+            fi
+            echo ""
+
+            echo "--- Open UDP Ports ---"
+            if [ -n "$OPEN_UDP_PORTS" ]; then
+                echo "$OPEN_UDP_PORTS" | tr ',' '\n' | while read -r port; do
+                    echo "  $port/udp"
+                done
+            else
+                echo "  (none detected or scan not run)"
+            fi
+            echo ""
+
+            echo "--- Service Versions ---"
+            if [ -f "$R/service_summary.txt" ]; then
+                cat "$R/service_summary.txt"
+            else
+                echo "  (detailed scan not available)"
+            fi
+            echo ""
+
+            echo "--- Vulnerability Findings ---"
+            if [ -f "$OUTPUT_DIR/vulns/nuclei_results.txt" ] && [ -s "$OUTPUT_DIR/vulns/nuclei_results.txt" ]; then
+                critical=$(grep -ci "critical" "$OUTPUT_DIR/vulns/nuclei_results.txt" 2>/dev/null || echo 0)
+                high=$(grep -ci "high" "$OUTPUT_DIR/vulns/nuclei_results.txt" 2>/dev/null || echo 0)
+                medium=$(grep -ci "medium" "$OUTPUT_DIR/vulns/nuclei_results.txt" 2>/dev/null || echo 0)
+                echo "  Nuclei:  Critical=$critical  High=$high  Medium=$medium"
+            else
+                echo "  Nuclei:  (no results or not run)"
+            fi
+            echo ""
+
+            echo "--- Sensitive Files Found ---"
+            if [ -f "$OUTPUT_DIR/web/sensitive_files.txt" ]; then
+                grep "200$" "$OUTPUT_DIR/web/sensitive_files.txt" 2>/dev/null | while read -r line; do
+                    echo "  [EXPOSED] $line"
+                done
+                exposed_count=$(grep -c "200$" "$OUTPUT_DIR/web/sensitive_files.txt" 2>/dev/null || echo 0)
+                [ "$exposed_count" -eq 0 ] && echo "  (none exposed)"
+            else
+                echo "  (check not run)"
+            fi
+            echo ""
+
+            echo "--- Key Findings ---"
+            # SMB anonymous access
+            if [ -f "$OUTPUT_DIR/smb/cme_shares.txt" ] && grep -qi "READ" "$OUTPUT_DIR/smb/cme_shares.txt" 2>/dev/null; then
+                echo "  [!] SMB shares accessible via null session"
+            fi
+            # SMB vulns
+            if [ -f "$OUTPUT_DIR/smb/smb_vulns.txt" ] && grep -qi "VULNERABLE" "$OUTPUT_DIR/smb/smb_vulns.txt" 2>/dev/null; then
+                echo "  [!] SMB vulnerabilities detected (EternalBlue/SMBGhost)"
+            fi
+            # FTP anonymous
+            if [ -f "$OUTPUT_DIR/auth/ftp_nmap.txt" ] && grep -qi "Anonymous" "$OUTPUT_DIR/auth/ftp_nmap.txt" 2>/dev/null; then
+                echo "  [!] FTP anonymous access enabled"
+            fi
+            # Redis unauthenticated
+            if [ -f "$OUTPUT_DIR/db/redis_access.txt" ] && grep -qi "redis_version" "$OUTPUT_DIR/db/redis_access.txt" 2>/dev/null; then
+                echo "  [!] Redis accessible without authentication"
+            fi
+            # SMTP open relay
+            if [ -f "$OUTPUT_DIR/mail/smtp_nmap.txt" ] && grep -qi "open-relay" "$OUTPUT_DIR/mail/smtp_nmap.txt" 2>/dev/null; then
+                echo "  [!] SMTP open relay detected"
+            fi
+            echo ""
+
+            echo "--- Output Directory ---"
+            echo "  $OUTPUT_DIR/"
+            find "$OUTPUT_DIR" -type f -name "*.txt" -o -name "*.nmap" -o -name "*.json" 2>/dev/null | \
+                sort | while read -r f; do
+                    size=$(du -h "$f" 2>/dev/null | awk '{print $1}')
+                    echo "  [$size] $f"
+                done
+            echo ""
+            echo "============================================"
+            echo "  Completed: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+            echo "============================================"
+        } > "$R/final_summary.txt"
+
+        # Update run info with end time
+        echo "Completed:  $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> "$R/run_info.txt"
+
+        log_ok "Final summary → $R/final_summary.txt"
+        echo ""
+        cat "$R/final_summary.txt"
+    fi
+fi
+
+# =============================================================================
+# Done
+# =============================================================================
+echo ""
+log_banner "Enumeration Complete"
+log_ok "All results saved to: $OUTPUT_DIR/"
+log_step "Review the summary: cat $OUTPUT_DIR/report/final_summary.txt"
+echo ""
