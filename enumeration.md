@@ -273,6 +273,270 @@ Consolidate results into a structured report. Tools like `Dradis`, `Faraday`, or
 
 ---
 
+## Phase 7: Traffic Obfuscation and Stealth Techniques
+
+During authorized penetration tests, controlling the visibility of your scan traffic is important for two reasons: (1) testing whether your IDS/IPS, WAF, and SOC can actually detect enumeration, and (2) reducing noise on production systems to avoid disruption. These techniques should only be used on infrastructure you own or with explicit written authorization.
+
+### Scan Timing and Rate Control
+
+Aggressive scanning is loud. Slowing down scans reduces the likelihood of triggering rate-based detection.
+
+- **Tools:** `nmap` timing templates, `feroxbuster`/`gobuster` rate flags
+
+```bash
+# nmap timing templates (T0=paranoid, T1=sneaky, T2=polite)
+nmap -sS -T2 -p- TARGET
+
+# Fine-grained control: max 5 packets/sec, 500ms between probes
+nmap -sS --max-rate 5 --scan-delay 500ms -p- TARGET
+
+# Randomize port order (default in nmap, but explicit for clarity)
+nmap -sS --randomize-hosts -p- TARGET
+
+# Rate-limit directory brute-forcing
+gobuster dir -u https://TARGET -w wordlist.txt -t 2 --delay 1s
+feroxbuster -u https://TARGET -w wordlist.txt -t 2 --rate-limit 5
+ffuf -u https://TARGET/FUZZ -w wordlist.txt -rate 5
+```
+
+| nmap Timing | Name | Probe Delay | Use Case |
+|-------------|------|-------------|----------|
+| `-T0` | Paranoid | 5 min | IDS evasion testing |
+| `-T1` | Sneaky | 15 sec | IDS evasion testing |
+| `-T2` | Polite | 400 ms | Reduced network impact |
+| `-T3` | Normal | default | Standard scanning |
+| `-T4` | Aggressive | fast | Lab/isolated environments |
+
+### Packet Fragmentation
+
+Splitting probe packets into smaller fragments can bypass simple packet-inspection firewalls and older IDS signatures.
+
+```bash
+# Fragment IP packets into 8-byte chunks
+nmap -f -sS -p 80,443 TARGET
+
+# Double fragmentation (16-byte fragments)
+nmap -ff -sS -p 80,443 TARGET
+
+# Set specific MTU (must be multiple of 8)
+nmap --mtu 24 -sS -p 80,443 TARGET
+```
+
+> **Note:** Modern IDS/IPS reassembles fragments before inspection. This is primarily useful for testing whether your defenses handle fragmentation correctly.
+
+### Decoy Scanning
+
+Decoy scanning mixes your real source IP with spoofed source IPs so that the target's logs show scan traffic from multiple addresses, making it harder to isolate the true scanner.
+
+```bash
+# Use decoys: ME is your real IP inserted among decoys
+nmap -D 10.0.0.5,10.0.0.6,ME,10.0.0.7 -sS -p 80,443 TARGET
+
+# Random decoys
+nmap -D RND:5 -sS -p 80,443 TARGET
+```
+
+> **Limitations:** Decoys only work for scans that don't require a full TCP handshake (SYN scans). The decoy hosts should be alive to avoid SYN flood artifacts.
+
+### Source Port Manipulation
+
+Some firewalls allow traffic from "trusted" source ports (e.g., DNS 53, HTTP 80). Sending scans from these ports can bypass poorly configured rules.
+
+```bash
+# Scan from source port 53 (DNS)
+nmap -g 53 -sS -p 1-1024 TARGET
+
+# Scan from source port 80 (HTTP)
+nmap --source-port 80 -sS -p 1-1024 TARGET
+```
+
+### Idle (Zombie) Scanning
+
+An idle scan uses a third-party host (the "zombie") to probe the target, so the target never sees your IP address. The zombie must have predictable IP ID sequence increments.
+
+```bash
+# Find a suitable zombie (look for incremental IP ID)
+nmap --script ipidseq TARGET_ZOMBIE
+
+# Perform idle scan through the zombie
+nmap -sI ZOMBIE_IP -p 80,443,22 TARGET
+```
+
+> **Use case:** Testing whether your network detects indirect scanning techniques. The zombie must be a host you also control.
+
+### Proxying and Tunneling Scan Traffic
+
+Route enumeration traffic through proxies or tunnels to test network segmentation, egress filtering, and logging.
+
+#### SOCKS Proxies
+
+```bash
+# Route nmap through a SOCKS4 proxy via proxychains
+# /etc/proxychains4.conf: socks4 127.0.0.1 9050
+proxychains4 nmap -sT -Pn -p 80,443 TARGET
+
+# Route web enumeration through a SOCKS proxy
+export ALL_PROXY=socks5://127.0.0.1:1080
+gobuster dir -u https://TARGET -w wordlist.txt
+```
+
+> **Note:** Proxychains forces TCP connect scans (`-sT`). SYN scans and UDP scans cannot be proxied through SOCKS.
+
+#### SSH Tunneling
+
+```bash
+# Dynamic SOCKS proxy through an SSH jump host you control
+ssh -D 9050 -f -N user@JUMPHOST
+
+# Then scan through it
+proxychains4 nmap -sT -Pn TARGET
+```
+
+#### VPN Pivoting
+
+- Use WireGuard or OpenVPN to route scan traffic through a host in the target network segment
+- Useful for testing internal segmentation controls
+
+### Spoofing and Custom Packet Crafting
+
+For advanced IDS/firewall testing, craft packets with specific flags, payloads, or header values.
+
+- **Tools:** `nmap`, `hping3`, `scapy`
+
+```bash
+# TCP SYN with specific flags via hping3
+hping3 -S -p 80 --rand-source -c 5 TARGET
+
+# Custom TTL to test firewall TTL-based filtering
+nmap --ttl 64 -sS -p 80 TARGET
+
+# Append random data to probe packets (evade length-based signatures)
+nmap --data-length 32 -sS -p 80,443 TARGET
+```
+
+#### Scapy (Python)
+
+```python
+from scapy.all import *
+
+# Craft a SYN packet with a custom source port and TTL
+pkt = IP(dst="TARGET", ttl=128) / TCP(sport=53, dport=80, flags="S")
+resp = sr1(pkt, timeout=2)
+```
+
+### HTTP-Layer Obfuscation
+
+When performing web enumeration, modify HTTP characteristics to blend in with normal traffic or bypass WAF rules.
+
+```bash
+# Randomize User-Agent with ffuf
+ffuf -u https://TARGET/FUZZ -w wordlist.txt \
+  -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+  -rate 5
+
+# Use a custom User-Agent with gobuster
+gobuster dir -u https://TARGET -w wordlist.txt \
+  -a "Mozilla/5.0 (compatible; Googlebot/2.1)"
+
+# Burp Suite / ZAP: configure upstream proxy, rotate User-Agents,
+# add jitter between requests in Intruder/Fuzzer settings
+```
+
+**WAF bypass patterns:**
+- Rotate User-Agent strings from a list of legitimate browsers
+- Add realistic headers (`Accept`, `Accept-Language`, `Referer`)
+- Use HTTP/2 where supported (some WAFs inspect HTTP/1.1 more aggressively)
+- Vary request paths with case changes, double encoding, or path normalization tricks to test WAF rule coverage
+
+### DNS Enumeration Stealth
+
+```bash
+# Use a specific DNS resolver to avoid your ISP's logging
+dig @9.9.9.9 example.com
+
+# Slow down DNS brute-forcing
+dnsenum --threads 1 --noreverse example.com
+
+# Use DNS-over-HTTPS for resolution
+# (in tools that support custom resolvers)
+```
+
+### MAC Address Spoofing (Local Network)
+
+When testing on a local network segment, change your MAC address to avoid being fingerprinted by switch port security or NAC.
+
+```bash
+# Spoof MAC before scanning on LAN
+ip link set eth0 down
+macchanger -r eth0
+ip link set eth0 up
+
+# Nmap also supports MAC spoofing directly
+nmap --spoof-mac Dell -sS -p- TARGET
+nmap --spoof-mac 00:11:22:33:44:55 -sS -p- TARGET
+```
+
+---
+
+## Phase 8: Obfuscation Best Practices
+
+### When to Use Stealth Techniques
+
+| Scenario | Recommended Approach |
+|----------|---------------------|
+| Testing your IDS/IPS detection capability | Use multiple evasion techniques, compare what gets caught |
+| Production system enumeration (authorized) | Polite timing (`-T2`), rate limiting, off-peak hours |
+| Lab or isolated environment | Speed over stealth — use `-T4`/`-T5` |
+| Red team engagement with detection testing | Layer techniques: timing + fragmentation + proxy + custom UA |
+| Validating WAF rules | HTTP-layer obfuscation, encoding variations |
+
+### Layering Techniques
+
+No single technique is sufficient against a well-configured defensive stack. Combine methods:
+
+1. **Transport layer:** Timing control + fragmentation + source port manipulation
+2. **Network layer:** Proxy/tunnel through a jump host + decoys
+3. **Application layer:** User-Agent rotation + header normalization + request jitter
+4. **Operational:** Scan during high-traffic periods, split scans across multiple source IPs you control
+
+### Logging Your Own Evasion
+
+Always capture your scan traffic alongside the target's defensive logs. This lets you correlate what was sent vs. what was detected.
+
+```bash
+# Capture all traffic to/from target during a scan
+tcpdump -i eth0 -w scan_capture.pcap host TARGET &
+TCPDUMP_PID=$!
+
+# Run your scan
+nmap -T2 -sS -p- TARGET -oA stealth_scan
+
+# Stop capture
+kill $TCPDUMP_PID
+```
+
+Then compare `scan_capture.pcap` against IDS alerts, firewall logs, and SIEM events to identify detection gaps.
+
+### Common Pitfalls
+
+- **Over-reliance on timing alone:** Slow scans still produce the same signatures — IDS correlation windows may catch them
+- **Ignoring DNS leaks:** Tools may resolve hostnames through your default resolver, leaking intent
+- **Fragmentation assumptions:** Most modern IDS/IPS reassembles fragments; don't assume this bypasses detection
+- **Proxy misconfiguration:** Ensure DNS resolution also goes through the proxy (`proxychains` can leak DNS)
+- **Forgetting outbound logging:** Your egress firewall or ISP may log the scan traffic even if the target doesn't detect it
+
+### Defensive Takeaways
+
+Use these techniques against your own infrastructure to answer:
+
+- Does our IDS detect slow scans (`-T1`, `-T2`)?
+- Do our firewalls properly reassemble fragmented packets?
+- Does our WAF catch requests with rotated User-Agents or encoded payloads?
+- Can our SOC correlate scan activity across multiple source IPs?
+- Do our logs capture enough detail to reconstruct an attacker's enumeration?
+
+---
+
 ## Quick Reference: Wordlists
 
 | Purpose | Path (Kali/SecLists) |
