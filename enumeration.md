@@ -547,3 +547,652 @@ Use these techniques against your own infrastructure to answer:
 | Passwords | `/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt` |
 | Usernames | `/usr/share/seclists/Usernames/top-usernames-shortlist.txt` |
 | SNMP | `/usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt` |
+
+---
+
+## Tool Installation Index
+
+Install instructions for every tool referenced in this document, organized by the section where they first appear, then alphabetically within each section.
+
+> **Prerequisites:** Most tools assume a Debian/Ubuntu-based system. On Kali Linux, the majority of these are pre-installed. Adjust package manager commands for your distribution (`dnf`, `pacman`, etc.). Tools installed via `go install` require Go 1.21+. Tools installed via `pip` should use a virtual environment.
+
+---
+
+### Phase 1: Passive Reconnaissance
+
+#### amass
+
+Subdomain enumeration and OSINT gathering.
+
+```bash
+# Via package manager (Kali)
+sudo apt install amass
+
+# Via Go
+go install -v github.com/owasp-amass/amass/v4/...@master
+
+# Via Snap
+sudo snap install amass
+```
+
+#### dig / host / nslookup
+
+DNS lookup utilities (part of `dnsutils`/`bind-utils`).
+
+```bash
+# Debian/Ubuntu/Kali
+sudo apt install dnsutils
+
+# RHEL/Fedora
+sudo dnf install bind-utils
+```
+
+#### dnsenum
+
+DNS enumeration and zone transfer tool.
+
+```bash
+sudo apt install dnsenum
+```
+
+#### dnsrecon
+
+DNS reconnaissance tool.
+
+```bash
+sudo apt install dnsrecon
+
+# Via pip
+pip install dnsrecon
+```
+
+#### gitleaks
+
+Scan git repos for secrets and credentials.
+
+```bash
+# Via Go
+go install github.com/gitleaks/gitleaks/v8@latest
+
+# Via Homebrew
+brew install gitleaks
+
+# Via package (Kali)
+sudo apt install gitleaks
+```
+
+#### trufflehog
+
+Find credentials in git history and other sources.
+
+```bash
+# Via Go
+go install github.com/trufflesecurity/trufflehog/v3@latest
+
+# Via Homebrew
+brew install trufflehog
+
+# Via pip
+pip install trufflehog
+```
+
+#### whois
+
+Domain registration lookup.
+
+```bash
+sudo apt install whois
+```
+
+---
+
+### Phase 2: Active Host Discovery
+
+#### arp-scan
+
+Layer 2 network scanner for local network discovery.
+
+```bash
+sudo apt install arp-scan
+```
+
+#### masscan
+
+High-speed port scanner.
+
+```bash
+sudo apt install masscan
+
+# From source
+git clone https://github.com/robertdavidgraham/masscan
+cd masscan && make -j
+sudo make install
+```
+
+#### nmap
+
+Network scanner and NSE scripting engine. Used across nearly every phase.
+
+```bash
+sudo apt install nmap
+
+# From source (latest version)
+wget https://nmap.org/dist/nmap-7.95.tar.bz2
+tar xjf nmap-7.95.tar.bz2
+cd nmap-7.95 && ./configure && make && sudo make install
+```
+
+---
+
+### Phase 3: Service Enumeration
+
+#### crackmapexec
+
+Network protocol attack and enumeration tool (SMB, MSSQL, etc.).
+
+```bash
+sudo apt install crackmapexec
+
+# Via pip (use pipx for isolation)
+pipx install crackmapexec
+```
+
+> **Note:** `crackmapexec` has been succeeded by `netexec` in active development. Consider `pipx install netexec` as a drop-in replacement.
+
+#### enum4linux-ng
+
+SMB/Samba enumeration tool (Python rewrite of enum4linux).
+
+```bash
+sudo apt install enum4linux-ng
+
+# From source
+git clone https://github.com/cddmp/enum4linux-ng
+cd enum4linux-ng && pip install -r requirements.txt
+```
+
+#### feroxbuster
+
+Fast, recursive web content discovery.
+
+```bash
+sudo apt install feroxbuster
+
+# Via cargo (Rust)
+cargo install feroxbuster
+
+# Via snap
+sudo snap install feroxbuster
+```
+
+#### ffuf
+
+Fast web fuzzer for directory/vhost/parameter discovery.
+
+```bash
+sudo apt install ffuf
+
+# Via Go
+go install github.com/ffuf/ffuf/v2@latest
+```
+
+#### gobuster
+
+Directory/file, DNS, and vhost brute-forcing tool.
+
+```bash
+sudo apt install gobuster
+
+# Via Go
+go install github.com/OJ/gobuster/v3@latest
+```
+
+#### ldapsearch
+
+LDAP query tool (part of `ldap-utils`).
+
+```bash
+# Debian/Ubuntu/Kali
+sudo apt install ldap-utils
+
+# RHEL/Fedora
+sudo dnf install openldap-clients
+```
+
+#### mongosh
+
+MongoDB Shell for database interaction.
+
+```bash
+# Via MongoDB repo
+wget -qO- https://www.mongodb.org/static/pgp/server-7.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg
+echo "deb [signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/7.0 main" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+sudo apt update && sudo apt install mongosh
+
+# Via npm
+npm install -g mongosh
+```
+
+#### mysql (client)
+
+MySQL/MariaDB command-line client.
+
+```bash
+sudo apt install default-mysql-client
+```
+
+#### nikto
+
+Web server vulnerability scanner.
+
+```bash
+sudo apt install nikto
+```
+
+#### onesixtyone
+
+Fast SNMP community string scanner.
+
+```bash
+sudo apt install onesixtyone
+```
+
+#### psql
+
+PostgreSQL command-line client.
+
+```bash
+sudo apt install postgresql-client
+```
+
+#### redis-cli
+
+Redis command-line client.
+
+```bash
+sudo apt install redis-tools
+```
+
+#### rpcinfo / showmount
+
+NFS and RPC enumeration tools (part of `nfs-common`).
+
+```bash
+sudo apt install nfs-common
+```
+
+#### smbclient
+
+SMB/CIFS client for share enumeration and file access.
+
+```bash
+sudo apt install smbclient
+```
+
+#### smtp-user-enum
+
+SMTP user enumeration via VRFY/EXPN/RCPT.
+
+```bash
+sudo apt install smtp-user-enum
+
+# Via CPAN / from source
+git clone https://github.com/pentestmonkey/smtp-user-enum
+```
+
+#### snmp-check
+
+SNMP device enumerator.
+
+```bash
+sudo apt install snmpcheck
+```
+
+#### snmpwalk
+
+SNMP tree walker (part of `snmp` package).
+
+```bash
+sudo apt install snmp
+```
+
+#### sqsh
+
+Interactive MSSQL/Sybase client.
+
+```bash
+sudo apt install sqsh
+```
+
+#### ssh-audit
+
+SSH server and client configuration auditor.
+
+```bash
+sudo apt install ssh-audit
+
+# Via pip
+pip install ssh-audit
+```
+
+#### sslyze
+
+TLS/SSL configuration analyzer.
+
+```bash
+pip install sslyze
+```
+
+#### testssl.sh
+
+TLS/SSL testing from the command line.
+
+```bash
+sudo apt install testssl.sh
+
+# From source
+git clone --depth 1 https://github.com/drwetter/testssl.sh.git
+```
+
+#### whatweb
+
+Web technology fingerprinter.
+
+```bash
+sudo apt install whatweb
+```
+
+---
+
+### Phase 4: Vulnerability Identification
+
+#### Burp Suite
+
+Web application security testing platform (GUI).
+
+```bash
+# Community Edition — download from PortSwigger
+# https://portswigger.net/burp/communitydownload
+# On Kali:
+sudo apt install burpsuite
+```
+
+#### Nessus
+
+Vulnerability scanner (commercial, free Essentials tier available).
+
+```bash
+# Download .deb from Tenable:
+# https://www.tenable.com/products/nessus/nessus-essentials
+sudo dpkg -i Nessus-*.deb
+sudo systemctl start nessusd
+# Access at https://localhost:8834
+```
+
+#### Nuclei
+
+Template-based vulnerability scanner.
+
+```bash
+sudo apt install nuclei
+
+# Via Go
+go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+
+# Templates update
+nuclei -update-templates
+```
+
+#### OpenVAS (Greenbone)
+
+Open-source vulnerability scanner.
+
+```bash
+# Via Greenbone Community Edition (Docker recommended)
+# https://greenbone.github.io/docs/latest/
+sudo apt install gvm
+sudo gvm-setup
+```
+
+#### OWASP ZAP
+
+Web application security scanner (GUI + CLI).
+
+```bash
+sudo apt install zaproxy
+
+# Via Snap
+sudo snap install zaproxy --classic
+
+# Via Docker
+docker run -u zap -p 8080:8080 ghcr.io/zaproxy/zaproxy:stable
+```
+
+#### pip-audit
+
+Python dependency vulnerability scanner.
+
+```bash
+pip install pip-audit
+```
+
+#### searchsploit
+
+Offline Exploit-DB search tool (part of `exploitdb`).
+
+```bash
+sudo apt install exploitdb
+
+# Update database
+searchsploit -u
+```
+
+#### sqlmap
+
+Automatic SQL injection detection and exploitation tool.
+
+```bash
+sudo apt install sqlmap
+
+# From source
+git clone --depth 1 https://github.com/sqlmapproject/sqlmap.git
+```
+
+#### Trivy
+
+Container, filesystem, and IaC vulnerability scanner.
+
+```bash
+# Via apt repo
+sudo apt install wget apt-transport-https gnupg lsb-release
+wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+sudo apt update && sudo apt install trivy
+
+# Via Homebrew
+brew install trivy
+```
+
+#### wfuzz
+
+Web fuzzer for parameter and path discovery.
+
+```bash
+sudo apt install wfuzz
+
+# Via pip
+pip install wfuzz
+```
+
+---
+
+### Phase 5: Configuration and Hardening Review
+
+#### kube-bench
+
+Kubernetes CIS Benchmark checker.
+
+```bash
+# Via Go
+go install github.com/aquasecurity/kube-bench@latest
+
+# Via Docker (run against current cluster)
+docker run --pid=host -v /etc:/etc:ro -v /var:/var:ro aquasec/kube-bench:latest
+```
+
+#### linpeas
+
+Linux privilege escalation auditing script.
+
+```bash
+# Download latest release
+curl -L https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh -o linpeas.sh
+chmod +x linpeas.sh
+```
+
+#### linux-exploit-suggester
+
+Suggests kernel exploits based on OS version.
+
+```bash
+git clone https://github.com/The-Z-Labs/linux-exploit-suggester.git
+chmod +x linux-exploit-suggester/linux-exploit-suggester.sh
+```
+
+#### lynis
+
+System auditing and hardening tool.
+
+```bash
+sudo apt install lynis
+
+# From source (latest)
+git clone https://github.com/CISOfy/lynis
+cd lynis && sudo ./lynis audit system
+```
+
+#### prowler
+
+AWS/Azure/GCP security assessment tool.
+
+```bash
+pip install prowler
+
+# Via Docker
+docker run -ti --rm -v ~/.aws:/root/.aws toniblyx/prowler aws
+```
+
+#### ScoutSuite
+
+Multi-cloud security auditing tool.
+
+```bash
+pip install scoutsuite
+```
+
+---
+
+### Phase 6: Documentation and Reporting
+
+#### Dradis
+
+Collaborative security reporting platform.
+
+```bash
+# Docker (recommended)
+docker run -p 3000:3000 dradis/dradis-ce
+
+# From source (Ruby/Rails application)
+# https://dradis.com/ce/documentation/install_kali.html
+```
+
+#### Faraday
+
+Collaborative penetration testing and vulnerability management.
+
+```bash
+# Via pip
+pip install faraday
+
+# Via Docker
+docker run -p 5985:5985 faradaysec/faraday:latest
+```
+
+---
+
+### Phase 7: Traffic Obfuscation
+
+#### hping3
+
+TCP/IP packet assembler and analyzer.
+
+```bash
+sudo apt install hping3
+```
+
+#### macchanger
+
+MAC address spoofing utility.
+
+```bash
+sudo apt install macchanger
+```
+
+#### proxychains4 (proxychains-ng)
+
+Force TCP connections through SOCKS/HTTP proxies.
+
+```bash
+sudo apt install proxychains4
+
+# From source
+git clone https://github.com/rofl0r/proxychains-ng
+cd proxychains-ng && ./configure && make && sudo make install
+```
+
+#### scapy
+
+Python packet manipulation library.
+
+```bash
+pip install scapy
+
+# On Kali
+sudo apt install python3-scapy
+```
+
+#### tcpdump
+
+Network packet capture and analysis.
+
+```bash
+sudo apt install tcpdump
+```
+
+---
+
+### Wordlists and Supporting Resources
+
+#### SecLists
+
+Comprehensive collection of wordlists for security testing.
+
+```bash
+sudo apt install seclists
+
+# From source
+git clone https://github.com/danielmiessler/SecLists.git /opt/seclists
+```
+
+#### Wappalyzer
+
+Browser extension for web technology fingerprinting.
+
+```
+# Install as browser extension from:
+# Chrome Web Store or Firefox Add-ons
+# Search "Wappalyzer"
+#
+# CLI alternative (Node.js):
+npm install -g wappalyzer
+```
