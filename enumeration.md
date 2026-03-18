@@ -4,6 +4,355 @@ A structured approach to identifying vulnerabilities on servers you own or have 
 
 ---
 
+## Attack Chain: End-to-End Enumeration Playbook
+
+This section walks through the full enumeration chain an attacker would follow against a target server, step by step, with exact commands. Use this on systems you own or have written authorization to test. Each step feeds into the next — output from earlier stages drives the targeting in later stages.
+
+> **Convention:** `TARGET` = IP or hostname. `DOMAIN` = target domain. Replace these throughout.
+
+---
+
+### Step 1: Passive Intelligence Gathering
+
+Collect as much information as possible without touching the target directly. This leaves zero footprint.
+
+```bash
+# 1a. WHOIS — identify registrant, IP blocks, name servers
+whois DOMAIN
+whois TARGET
+
+# 1b. DNS records — find subdomains, mail servers, SPF/DKIM, name servers
+dig any DOMAIN
+dig txt DOMAIN
+dig mx DOMAIN
+dig ns DOMAIN
+
+# 1c. Zone transfer — if misconfigured, dumps the entire DNS zone
+dig axfr DOMAIN @$(dig ns DOMAIN +short | head -1)
+
+# 1d. Subdomain enumeration — passive sources (no direct target contact)
+amass enum -passive -d DOMAIN -o passive_subs.txt
+
+# 1e. Certificate transparency — find additional hostnames from TLS certs
+curl -s "https://crt.sh/?q=%25.DOMAIN&output=json" | jq -r '.[].name_value' | sort -u > ct_subs.txt
+
+# 1f. Combine and deduplicate all discovered hostnames
+cat passive_subs.txt ct_subs.txt | sort -u > all_subs.txt
+
+# 1g. Resolve discovered subdomains to IP addresses
+while read sub; do
+  ip=$(dig +short "$sub" | head -1)
+  [ -n "$ip" ] && echo "$sub -> $ip"
+done < all_subs.txt | tee resolved_hosts.txt
+
+# 1h. Search for leaked credentials and secrets in public repos
+gitleaks detect --source="https://github.com/TARGET_ORG" --report-path=gitleaks_report.json
+trufflehog github --org=TARGET_ORG --json > trufflehog_results.json
+```
+
+**What you have now:** A list of hostnames, IPs, mail servers, name servers, and potentially leaked credentials — all gathered without the target seeing a single packet from you.
+
+---
+
+### Step 2: Active Host Discovery and Port Scanning
+
+Now touch the target. Start broad and fast, then go deep on what you find.
+
+```bash
+# 2a. Ping sweep — which hosts are alive? (skip if target blocks ICMP)
+nmap -sn -T4 TARGET/24 -oG alive_hosts.txt
+grep "Up" alive_hosts.txt | awk '{print $2}' > live_ips.txt
+
+# 2b. Fast SYN scan — all 65535 TCP ports on live hosts
+nmap -sS -p- --min-rate 10000 -T4 -iL live_ips.txt -oA tcp_all_ports
+
+# 2c. Extract open ports for targeted deep scan
+grep "open" tcp_all_ports.gnmap | awk -F'/' '{print $1}' | \
+  awk '{print $NF}' | sort -un | tr '\n' ',' > open_ports.txt
+
+# 2d. Service version detection + default scripts on discovered ports
+nmap -sV -sC -O -p$(cat open_ports.txt) -iL live_ips.txt -oA detailed_scan
+
+# 2e. UDP scan — top 50 most common UDP services
+nmap -sU --top-ports 50 -T4 -iL live_ips.txt -oA udp_scan
+
+# 2f. Aggressive OS fingerprinting on key targets
+nmap -O --osscan-guess TARGET -oA os_fingerprint
+```
+
+**What you have now:** A complete port map, service versions, OS guesses, and NSE script output for every live host. This is the foundation for all targeted enumeration.
+
+---
+
+### Step 3: Web Service Enumeration (80/443)
+
+Web services are the most common and most exploitable attack surface. Enumerate thoroughly.
+
+```bash
+# 3a. Technology fingerprinting — what stack is running?
+whatweb -a 3 https://TARGET | tee whatweb_output.txt
+
+# 3b. TLS configuration audit
+testssl.sh --quiet https://TARGET | tee tls_audit.txt
+
+# 3c. Directory and file brute-force — find hidden content
+feroxbuster -u https://TARGET \
+  -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt \
+  -x php,html,txt,bak,conf,json,xml,asp,aspx,jsp \
+  -t 20 --rate-limit 100 \
+  -o ferox_dirs.txt
+
+# 3d. Check for sensitive file exposure
+curl -s -o /dev/null -w "%{http_code}" https://TARGET/.git/HEAD
+curl -s -o /dev/null -w "%{http_code}" https://TARGET/.env
+curl -s -o /dev/null -w "%{http_code}" https://TARGET/robots.txt
+curl -s -o /dev/null -w "%{http_code}" https://TARGET/sitemap.xml
+curl -s -o /dev/null -w "%{http_code}" https://TARGET/.DS_Store
+curl -s -o /dev/null -w "%{http_code}" https://TARGET/server-status
+curl -s -o /dev/null -w "%{http_code}" https://TARGET/wp-config.php.bak
+
+# 3e. Virtual host enumeration — find sites sharing the same IP
+ffuf -u https://TARGET -H "Host: FUZZ.DOMAIN" \
+  -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt \
+  -fc 301,302,404 -o vhost_results.json
+
+# 3f. Vulnerability scan against web server
+nikto -h https://TARGET -output nikto_results.txt
+
+# 3g. Screenshot all discovered web services for quick visual review
+# (requires gowitness or eyewitness)
+gowitness file -f urls.txt --screenshot-path ./screenshots/
+```
+
+**What you have now:** Full picture of the web stack — technology, TLS posture, hidden files/directories, virtual hosts, and known vulnerabilities.
+
+---
+
+### Step 4: Authentication Service Enumeration (SSH, RDP, FTP)
+
+Probe services that accept credentials for weaknesses.
+
+```bash
+# 4a. SSH — audit configuration, algorithms, and auth methods
+ssh-audit TARGET | tee ssh_audit.txt
+nmap --script ssh2-enum-algos,ssh-auth-methods -p 22 TARGET
+
+# 4b. FTP — check for anonymous access
+nmap --script ftp-anon,ftp-syst -p 21 TARGET
+
+# 4c. RDP — check encryption and NLA status
+nmap --script rdp-enum-encryption,rdp-ntlm-info -p 3389 TARGET
+```
+
+**What you have now:** Whether SSH allows weak algorithms or password auth, whether FTP allows anonymous login, and RDP security posture.
+
+---
+
+### Step 5: Windows / SMB / Active Directory Enumeration (139/445)
+
+If the target runs Windows or Samba, SMB is a goldmine.
+
+```bash
+# 5a. Full SMB enumeration — shares, users, groups, policies, OS info
+enum4linux-ng -A TARGET | tee enum4linux_output.txt
+
+# 5b. List accessible shares (null session)
+smbclient -L //TARGET -N
+crackmapexec smb TARGET --shares -u '' -p ''
+
+# 5c. Check for critical SMB vulnerabilities
+nmap --script smb-vuln-ms17-010,smb-vuln-ms08-067,smb-vuln-cve-2020-0796 -p 445 TARGET
+
+# 5d. Enumerate users via RID cycling (no credentials needed)
+crackmapexec smb TARGET -u '' -p '' --rid-brute
+
+# 5e. If credentials are obtained, go deeper
+crackmapexec smb TARGET -u USER -p PASS --shares --sessions --disks --loggedon-users
+```
+
+**What you have now:** Share permissions, user accounts, group memberships, password policies, and whether the host is vulnerable to EternalBlue or SMBGhost.
+
+---
+
+### Step 6: Mail and Messaging Enumeration (SMTP/POP3/IMAP)
+
+Email services leak usernames and may allow relay abuse.
+
+```bash
+# 6a. SMTP user enumeration via VRFY
+smtp-user-enum -M VRFY -U /usr/share/seclists/Usernames/top-usernames-shortlist.txt -t TARGET
+
+# 6b. SMTP user enumeration via RCPT TO (if VRFY is disabled)
+smtp-user-enum -M RCPT -U /usr/share/seclists/Usernames/top-usernames-shortlist.txt -t TARGET
+
+# 6c. Open relay check — can you send mail through this server?
+nmap --script smtp-open-relay -p 25 TARGET
+
+# 6d. Grab SMTP banner and supported commands
+nmap --script smtp-commands,smtp-ntlm-info -p 25,465,587 TARGET
+```
+
+**What you have now:** Valid usernames harvested via SMTP, relay status, and server configuration details.
+
+---
+
+### Step 7: SNMP Enumeration (161/UDP)
+
+SNMP with weak community strings can dump system configuration, interfaces, routing tables, and running processes.
+
+```bash
+# 7a. Brute-force community strings
+onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt TARGET
+
+# 7b. If community string is found (e.g., "public"), walk the full MIB tree
+snmpwalk -v2c -c public TARGET | tee snmpwalk_full.txt
+
+# 7c. Targeted OID walks for high-value data
+snmpwalk -v2c -c public TARGET 1.3.6.1.2.1.1       # System info
+snmpwalk -v2c -c public TARGET 1.3.6.1.2.1.25.4.2  # Running processes
+snmpwalk -v2c -c public TARGET 1.3.6.1.2.1.6.13    # TCP connections
+snmpwalk -v2c -c public TARGET 1.3.6.1.2.1.25.6.3  # Installed software
+
+# 7d. Automated SNMP enumeration
+snmp-check TARGET -c public | tee snmpcheck_output.txt
+```
+
+**What you have now:** System description, network interfaces, running processes, installed software, TCP connection table — massive recon from a single misconfigured service.
+
+---
+
+### Step 8: Database Enumeration (3306/5432/1433/6379/27017)
+
+Exposed databases are often misconfigured or use default credentials.
+
+```bash
+# 8a. MySQL — check for anonymous/root access
+nmap --script mysql-info,mysql-enum,mysql-empty-password -p 3306 TARGET
+mysql -h TARGET -u root -p'' -e "SELECT user,host FROM mysql.user;" 2>/dev/null
+
+# 8b. PostgreSQL — default credentials and database listing
+nmap --script pgsql-brute -p 5432 TARGET
+psql -h TARGET -U postgres -c "\l" 2>/dev/null
+
+# 8c. MSSQL — instance discovery, info gathering
+nmap --script ms-sql-info,ms-sql-ntlm-info,ms-sql-empty-password -p 1433 TARGET
+
+# 8d. Redis — unauthenticated access check
+redis-cli -h TARGET INFO server 2>/dev/null
+redis-cli -h TARGET CONFIG GET dir 2>/dev/null
+
+# 8e. MongoDB — unauthenticated access check
+nmap --script mongodb-info,mongodb-databases -p 27017 TARGET
+mongosh --host TARGET --eval "db.adminCommand('listDatabases')" 2>/dev/null
+```
+
+**What you have now:** Whether databases accept unauthenticated connections, user lists, database inventories, and configuration details.
+
+---
+
+### Step 9: NFS, RPC, and LDAP Enumeration
+
+These services often expose file systems and directory information without authentication.
+
+```bash
+# 9a. RPC — list registered services
+rpcinfo -p TARGET
+
+# 9b. NFS — list exported shares and check mount permissions
+showmount -e TARGET
+# If a share is mountable:
+mkdir /tmp/nfs_mount && sudo mount -t nfs TARGET:/share /tmp/nfs_mount
+
+# 9c. LDAP — anonymous bind and base enumeration
+ldapsearch -x -H ldap://TARGET -b "" -s base namingContexts
+ldapsearch -x -H ldap://TARGET -b "dc=DOMAIN,dc=com" "(objectClass=*)" | tee ldap_dump.txt
+
+# 9d. LDAP user enumeration
+ldapsearch -x -H ldap://TARGET -b "dc=DOMAIN,dc=com" "(objectClass=person)" cn sAMAccountName
+```
+
+**What you have now:** Mountable file shares, exported directories, and full LDAP directory dumps including user accounts.
+
+---
+
+### Step 10: Automated Vulnerability Scanning
+
+With full service knowledge, run targeted vulnerability scanners for CVE identification.
+
+```bash
+# 10a. Nuclei — fast, template-based vuln scanning
+nuclei -u https://TARGET -t cves/ -t misconfigurations/ -t exposures/ \
+  -severity critical,high,medium -o nuclei_results.txt
+
+# 10b. Nmap vuln scripts — cross-service CVE checks
+nmap --script vuln -p$(cat open_ports.txt) TARGET -oA vuln_scan
+
+# 10c. searchsploit — correlate every discovered service version
+# Extract versions from nmap output and search each one:
+grep "open" detailed_scan.nmap | while read line; do
+  service=$(echo "$line" | awk '{for(i=3;i<=NF;i++) printf $i " "; print ""}')
+  echo "=== $service ===" >> searchsploit_results.txt
+  searchsploit "$service" >> searchsploit_results.txt 2>&1
+done
+
+# 10d. Web application vulnerability scan
+sqlmap -u "https://TARGET/page?id=1" --batch --crawl=3 --forms --risk=2 --level=3
+```
+
+**What you have now:** A prioritized list of known CVEs and exploitable conditions mapped to every discovered service.
+
+---
+
+### Step 11: Consolidate and Prioritize Findings
+
+Bring everything together into a structured attack surface map.
+
+```bash
+# 11a. Organize all output
+mkdir -p results/{passive,ports,web,auth,smb,mail,snmp,db,nfs,vulns}
+mv passive_subs.txt ct_subs.txt resolved_hosts.txt gitleaks_report.json trufflehog_results.json results/passive/
+mv tcp_all_ports.* detailed_scan.* udp_scan.* os_fingerprint.* results/ports/
+mv whatweb_output.txt tls_audit.txt ferox_dirs.txt vhost_results.json nikto_results.txt results/web/
+mv ssh_audit.txt results/auth/
+mv enum4linux_output.txt results/smb/
+mv snmpwalk_full.txt snmpcheck_output.txt results/snmp/
+mv nuclei_results.txt vuln_scan.* searchsploit_results.txt results/vulns/
+
+# 11b. Generate a summary of all open ports and services
+grep "open" detailed_scan.nmap | sort -t/ -k1 -n > results/service_summary.txt
+
+# 11c. Count findings by severity (nuclei output)
+echo "=== Finding Severity Summary ===" > results/summary.txt
+grep -c "critical" nuclei_results.txt | xargs -I{} echo "Critical: {}" >> results/summary.txt
+grep -c "high" nuclei_results.txt | xargs -I{} echo "High: {}" >> results/summary.txt
+grep -c "medium" nuclei_results.txt | xargs -I{} echo "Medium: {}" >> results/summary.txt
+cat results/summary.txt
+```
+
+**What you have now:** A complete, organized attack surface map with prioritized vulnerabilities ready for exploitation or remediation.
+
+---
+
+### Quick Reference: The Chain at a Glance
+
+```
+Step 1:  Passive recon    ──→  Hostnames, IPs, leaked creds
+Step 2:  Port scan        ──→  Open ports, service versions, OS
+Step 3:  Web enumeration  ──→  Directories, tech stack, vhosts, vulns
+Step 4:  Auth services    ──→  SSH/FTP/RDP config weaknesses
+Step 5:  SMB/AD           ──→  Shares, users, groups, SMB vulns
+Step 6:  Mail             ──→  Valid usernames, relay status
+Step 7:  SNMP             ──→  System info, processes, network config
+Step 8:  Databases        ──→  Unauth access, user lists, data
+Step 9:  NFS/RPC/LDAP     ──→  File shares, directory users
+Step 10: Vuln scanning    ──→  CVEs mapped to services
+Step 11: Consolidate      ──→  Prioritized attack surface map
+```
+
+Each step's output feeds the next. Credentials found in Step 1 feed into Step 5. Usernames from Step 6 feed into brute-force in Step 4. Service versions from Step 2 drive CVE lookups in Step 10. The chain is iterative — new discoveries send you back to earlier steps with better targeting.
+
+---
+
 ## Phase 1: Passive Reconnaissance
 
 Gather information without directly interacting with the target.
