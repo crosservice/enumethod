@@ -1401,6 +1401,187 @@ if should_run 11; then
         log_ok "Final summary → $R/final_summary.txt"
         echo ""
         cat "$R/final_summary.txt"
+
+        # ── HTML Report ──────────────────────────────────────────────────
+        log_step "Generating HTML report"
+        HTML="$R/report.html"
+
+        # Collect data for the HTML report
+        html_tcp=""
+        if [ -n "$OPEN_TCP_PORTS" ]; then
+            while IFS= read -r port; do
+                html_tcp+="<tr><td>${port}</td><td>TCP</td></tr>"
+            done <<< "$(echo "$OPEN_TCP_PORTS" | tr ',' '\n')"
+        fi
+
+        html_udp=""
+        if [ -n "$OPEN_UDP_PORTS" ]; then
+            while IFS= read -r port; do
+                html_udp+="<tr><td>${port}</td><td>UDP</td></tr>"
+            done <<< "$(echo "$OPEN_UDP_PORTS" | tr ',' '\n')"
+        fi
+
+        html_services=""
+        if [ -f "$R/service_summary.txt" ]; then
+            while IFS= read -r line; do
+                port_proto=$(echo "$line" | awk '{print $1}')
+                state=$(echo "$line" | awk '{print $2}')
+                service=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ *//')
+                html_services+="<tr><td>${port_proto}</td><td>${state}</td><td>${service}</td></tr>"
+            done < "$R/service_summary.txt"
+        fi
+
+        # Vulnerability counts
+        nuclei_critical=0; nuclei_high=0; nuclei_medium=0; nuclei_low=0
+        if [ -f "$OUTPUT_DIR/vulns/nuclei_results.txt" ] && [ -s "$OUTPUT_DIR/vulns/nuclei_results.txt" ]; then
+            nuclei_critical=$(grep -ci "critical" "$OUTPUT_DIR/vulns/nuclei_results.txt" 2>/dev/null || echo 0)
+            nuclei_high=$(grep -ci "high" "$OUTPUT_DIR/vulns/nuclei_results.txt" 2>/dev/null || echo 0)
+            nuclei_medium=$(grep -ci "medium" "$OUTPUT_DIR/vulns/nuclei_results.txt" 2>/dev/null || echo 0)
+            nuclei_low=$(grep -ci "low" "$OUTPUT_DIR/vulns/nuclei_results.txt" 2>/dev/null || echo 0)
+        fi
+
+        # Key findings
+        html_findings=""
+        if [ -f "$OUTPUT_DIR/smb/cme_shares.txt" ] && grep -qi "READ" "$OUTPUT_DIR/smb/cme_shares.txt" 2>/dev/null; then
+            html_findings+='<tr><td class="sev-high">HIGH</td><td>SMB shares accessible via null session</td></tr>'
+        fi
+        if [ -f "$OUTPUT_DIR/smb/smb_vulns.txt" ] && grep -qi "VULNERABLE" "$OUTPUT_DIR/smb/smb_vulns.txt" 2>/dev/null; then
+            html_findings+='<tr><td class="sev-crit">CRITICAL</td><td>SMB vulnerabilities detected (EternalBlue / SMBGhost)</td></tr>'
+        fi
+        if [ -f "$OUTPUT_DIR/auth/ftp_nmap.txt" ] && grep -qi "Anonymous" "$OUTPUT_DIR/auth/ftp_nmap.txt" 2>/dev/null; then
+            html_findings+='<tr><td class="sev-high">HIGH</td><td>FTP anonymous access enabled</td></tr>'
+        fi
+        if [ -f "$OUTPUT_DIR/db/redis_access.txt" ] && grep -qi "redis_version" "$OUTPUT_DIR/db/redis_access.txt" 2>/dev/null; then
+            html_findings+='<tr><td class="sev-high">HIGH</td><td>Redis accessible without authentication</td></tr>'
+        fi
+        if [ -f "$OUTPUT_DIR/mail/smtp_nmap.txt" ] && grep -qi "open-relay" "$OUTPUT_DIR/mail/smtp_nmap.txt" 2>/dev/null; then
+            html_findings+='<tr><td class="sev-high">HIGH</td><td>SMTP open relay detected</td></tr>'
+        fi
+
+        # Sensitive files
+        html_sensitive=""
+        if [ -f "$OUTPUT_DIR/web/sensitive_files.txt" ]; then
+            while IFS= read -r line; do
+                html_sensitive+="<tr><td class=\"sev-high\">EXPOSED</td><td>${line}</td></tr>"
+            done < <(grep "200$" "$OUTPUT_DIR/web/sensitive_files.txt" 2>/dev/null || true)
+        fi
+
+        # File listing
+        html_files=""
+        while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            size=$(du -h "$f" 2>/dev/null | awk '{print $1}')
+            relpath="${f#$OUTPUT_DIR/}"
+            html_files+="<tr><td>${size}</td><td>${relpath}</td></tr>"
+        done < <(find "$OUTPUT_DIR" -type f \( -name "*.txt" -o -name "*.nmap" -o -name "*.json" -o -name "*.html" \) 2>/dev/null | sort)
+
+        REPORT_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+        cat > "$HTML" <<HTMLEOF
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Enumeration Report — ${TARGET}</title>
+<style>
+  :root { --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #e6edf3;
+          --muted: #8b949e; --accent: #58a6ff; --green: #3fb950; --yellow: #d29922;
+          --orange: #db6d28; --red: #f85149; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+         background: var(--bg); color: var(--text); line-height: 1.6; padding: 2rem; }
+  h1 { font-size: 1.8rem; margin-bottom: .25rem; }
+  .subtitle { color: var(--muted); margin-bottom: 2rem; }
+  h2 { font-size: 1.2rem; color: var(--accent); margin: 2rem 0 .75rem; border-bottom: 1px solid var(--border);
+       padding-bottom: .4rem; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center; }
+  .card .num { font-size: 2rem; font-weight: 700; }
+  .card .label { color: var(--muted); font-size: .85rem; }
+  .card.crit .num { color: var(--red); }
+  .card.high .num { color: var(--orange); }
+  .card.med  .num { color: var(--yellow); }
+  .card.low  .num { color: var(--green); }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
+  th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--border); font-size: .9rem; }
+  th { color: var(--muted); font-weight: 600; background: var(--card); }
+  tr:hover td { background: var(--card); }
+  .sev-crit { color: var(--red); font-weight: 700; }
+  .sev-high { color: var(--orange); font-weight: 700; }
+  .sev-med  { color: var(--yellow); font-weight: 700; }
+  .sev-low  { color: var(--green); font-weight: 700; }
+  .empty { color: var(--muted); font-style: italic; padding: 1rem 0; }
+  footer { margin-top: 3rem; color: var(--muted); font-size: .8rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+</style>
+</head>
+<body>
+
+<h1>Enumeration Report</h1>
+<p class="subtitle">Target: <strong>${TARGET}</strong> &mdash; Domain: <strong>${DOMAIN:-N/A}</strong> &mdash; ${REPORT_DATE}</p>
+
+<h2>Vulnerability Overview</h2>
+<div class="cards">
+  <div class="card crit"><div class="num">${nuclei_critical}</div><div class="label">Critical</div></div>
+  <div class="card high"><div class="num">${nuclei_high}</div><div class="label">High</div></div>
+  <div class="card med"><div class="num">${nuclei_medium}</div><div class="label">Medium</div></div>
+  <div class="card low"><div class="num">${nuclei_low}</div><div class="label">Low</div></div>
+</div>
+
+<h2>Open Ports</h2>
+$(if [ -n "$html_tcp" ] || [ -n "$html_udp" ]; then
+    echo '<table><tr><th>Port</th><th>Protocol</th></tr>'
+    echo "${html_tcp}${html_udp}"
+    echo '</table>'
+else
+    echo '<p class="empty">No open ports detected or scan not run.</p>'
+fi)
+
+<h2>Service Versions</h2>
+$(if [ -n "$html_services" ]; then
+    echo '<table><tr><th>Port</th><th>State</th><th>Service / Version</th></tr>'
+    echo "$html_services"
+    echo '</table>'
+else
+    echo '<p class="empty">Detailed scan not available.</p>'
+fi)
+
+<h2>Key Findings</h2>
+$(if [ -n "$html_findings" ]; then
+    echo '<table><tr><th>Severity</th><th>Finding</th></tr>'
+    echo "$html_findings"
+    echo '</table>'
+else
+    echo '<p class="empty">No critical findings flagged.</p>'
+fi)
+
+<h2>Sensitive Files</h2>
+$(if [ -n "$html_sensitive" ]; then
+    echo '<table><tr><th>Status</th><th>Path</th></tr>'
+    echo "$html_sensitive"
+    echo '</table>'
+else
+    echo '<p class="empty">No exposed sensitive files detected.</p>'
+fi)
+
+<h2>Output Files</h2>
+$(if [ -n "$html_files" ]; then
+    echo '<table><tr><th>Size</th><th>File</th></tr>'
+    echo "$html_files"
+    echo '</table>'
+else
+    echo '<p class="empty">No output files found.</p>'
+fi)
+
+<footer>
+  Generated by <strong>enumethod</strong> &mdash; ${REPORT_DATE}
+</footer>
+
+</body>
+</html>
+HTMLEOF
+
+        log_ok "HTML report → $R/report.html"
     fi
 fi
 
@@ -1411,4 +1592,5 @@ echo ""
 log_banner "Enumeration Complete"
 log_ok "All results saved to: $OUTPUT_DIR/"
 log_step "Review the summary: cat $OUTPUT_DIR/report/final_summary.txt"
+log_step "Open HTML report:   $OUTPUT_DIR/report/report.html"
 echo ""
