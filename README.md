@@ -24,7 +24,8 @@ chmod +x enumerate.sh
 To pre-install SecLists:
 
 ```bash
-sudo apt install seclists
+sudo apt install seclists        # Kali/Parrot
+sudo snap install seclists       # Ubuntu/Debian
 ```
 
 ## Usage
