@@ -15,6 +15,9 @@
 #   -s, --steps STEPS       Comma-separated steps to run: 1-11 or "all" (default: all)
 #   -t, --timing TIMING     nmap timing template 0-5 (default: 4)
 #   -w, --wordlist PATH     Directory wordlist override
+#   --vpn CONFIG            Route all traffic through WireGuard (path to .conf file)
+#   --vpn-iface NAME        WireGuard interface name (default: wg-enum)
+#   --vpn-keep              Don't tear down the VPN tunnel on exit
 #   --skip-udp              Skip UDP scanning (slow)
 #   --skip-bruteforce       Skip directory/vhost brute-forcing
 #   --dry-run               Print commands without executing
@@ -49,9 +52,16 @@ WORDLIST_DIR="/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.
 WORDLIST_USERS="/usr/share/seclists/Usernames/top-usernames-shortlist.txt"
 WORDLIST_SNMP="/usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt"
 WORDLIST_VHOSTS="/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+VPN_CONF=""
+VPN_IFACE="wg-enum"
+VPN_KEEP=false
+VPN_ACTIVE=false
 SKIP_UDP=false
 SKIP_BRUTEFORCE=false
 DRY_RUN=false
+# These get populated when --vpn is active, injected into tool commands
+NMAP_IFACE_OPT=""
+CURL_IFACE_OPT=""
 OPEN_TCP_PORTS=""
 OPEN_UDP_PORTS=""
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -146,6 +156,9 @@ declare -A TOOL_PKG_MAP=(
     [sqlmap]="apt:sqlmap"
     # Required
     [nmap]="apt:nmap"
+    # VPN
+    [wg]="apt:wireguard-tools"
+    [wg-quick]="apt:wireguard-tools"
 )
 
 # Track tools that failed installation so we don't retry
@@ -256,6 +269,186 @@ ensure_wordlists() {
     fi
 }
 
+# =============================================================================
+# WireGuard VPN tunnel management
+# =============================================================================
+
+# Bring up a WireGuard tunnel from a .conf file.
+# Supports both wg-quick configs and raw WireGuard configs.
+vpn_up() {
+    local conf="$1"
+    local iface="$2"
+
+    if [ ! -f "$conf" ]; then
+        log_error "WireGuard config not found: $conf"
+        exit 1
+    fi
+
+    ensure_cmd wg || {
+        log_error "WireGuard tools (wg) could not be installed. Cannot set up VPN."
+        exit 1
+    }
+
+    # If the interface is already up, skip
+    if ip link show "$iface" &>/dev/null; then
+        log_warn "WireGuard interface '$iface' already exists — reusing it"
+        VPN_ACTIVE=true
+        return 0
+    fi
+
+    log_step "Bringing up WireGuard tunnel ($iface) from $conf"
+
+    # Detect config type: wg-quick configs have Address/DNS lines, raw ones don't
+    if grep -qiE '^\s*(Address|DNS|PostUp|PreDown)\s*=' "$conf" 2>/dev/null; then
+        # wg-quick style config — use wg-quick with a custom interface name
+        log_step "Detected wg-quick config format"
+
+        # wg-quick uses the filename stem as the interface name, so we
+        # symlink the config to /etc/wireguard/<iface>.conf
+        local wg_dir="/etc/wireguard"
+        mkdir -p "$wg_dir"
+        local target_conf="$wg_dir/${iface}.conf"
+
+        if [ "$(realpath "$conf" 2>/dev/null)" != "$(realpath "$target_conf" 2>/dev/null)" ]; then
+            cp "$conf" "$target_conf"
+            chmod 600 "$target_conf"
+        fi
+
+        if $DRY_RUN; then
+            echo -e "  ${YELLOW}[DRY-RUN]${NC} wg-quick up $iface"
+            VPN_ACTIVE=true
+            return 0
+        fi
+
+        wg-quick up "$iface" 2>&1 | while IFS= read -r line; do
+            log_step "  wg-quick: $line"
+        done
+
+    else
+        # Raw WireGuard config — use ip + wg directly
+        log_step "Detected raw WireGuard config format"
+
+        if $DRY_RUN; then
+            echo -e "  ${YELLOW}[DRY-RUN]${NC} ip link add $iface type wireguard && wg setconf $iface $conf"
+            VPN_ACTIVE=true
+            return 0
+        fi
+
+        ip link add "$iface" type wireguard
+        wg setconf "$iface" "$conf"
+
+        # Extract Address from config if present (some raw configs still have it as a comment)
+        # Otherwise user must have routing set up already
+        local addr
+        addr=$(grep -oP '^\s*#?\s*Address\s*=\s*\K\S+' "$conf" 2>/dev/null | head -1 || true)
+        if [ -n "$addr" ]; then
+            ip addr add "$addr" dev "$iface"
+        fi
+
+        ip link set "$iface" up
+    fi
+
+    # Verify the interface came up
+    if ip link show "$iface" &>/dev/null; then
+        VPN_ACTIVE=true
+        local endpoint
+        endpoint=$(wg show "$iface" endpoints 2>/dev/null | awk '{print $2}' | head -1)
+        local pub_ip
+        pub_ip=$(wg show "$iface" 2>/dev/null | grep -oP 'endpoint:\s*\K[^:]+' || echo "$endpoint")
+        log_ok "WireGuard tunnel UP on $iface"
+        [ -n "$endpoint" ] && log_ok "  Endpoint: $endpoint"
+
+        # Show the tunnel's public IP (what the target sees)
+        if ! $DRY_RUN && ensure_cmd curl; then
+            local my_ip
+            my_ip=$(curl -s --max-time 5 --interface "$iface" https://ifconfig.me 2>/dev/null || \
+                    curl -s --max-time 5 --interface "$iface" https://api.ipify.org 2>/dev/null || \
+                    echo "(could not determine)")
+            log_ok "  Your exit IP: $my_ip"
+        fi
+    else
+        log_error "WireGuard interface '$iface' failed to come up"
+        exit 1
+    fi
+
+    # Add a route for the target through the WireGuard interface
+    # Only if AllowedIPs doesn't already cover it (0.0.0.0/0 = full tunnel)
+    local allowed_ips
+    allowed_ips=$(wg show "$iface" allowed-ips 2>/dev/null | awk '{print $2}')
+    if echo "$allowed_ips" | grep -qE '0\.0\.0\.0/0|::/0'; then
+        log_ok "  Full tunnel detected (0.0.0.0/0) — all traffic routed via VPN"
+    else
+        # Split tunnel — add an explicit route for the target
+        log_step "  Split tunnel — adding route for $TARGET via $iface"
+        ip route add "$TARGET/32" dev "$iface" 2>/dev/null || \
+            log_warn "  Could not add route for $TARGET (may already exist)"
+    fi
+}
+
+# Tear down the WireGuard tunnel
+vpn_down() {
+    local iface="$1"
+
+    if ! $VPN_ACTIVE; then
+        return 0
+    fi
+
+    if $VPN_KEEP; then
+        log_warn "Leaving WireGuard tunnel '$iface' UP (--vpn-keep)"
+        return 0
+    fi
+
+    log_step "Tearing down WireGuard tunnel ($iface)"
+
+    # Try wg-quick first (if that's how it was brought up)
+    if wg-quick down "$iface" 2>/dev/null; then
+        log_ok "WireGuard tunnel '$iface' is DOWN (wg-quick)"
+    else
+        # Manual teardown
+        ip link set "$iface" down 2>/dev/null || true
+        ip link del "$iface" 2>/dev/null || true
+        log_ok "WireGuard tunnel '$iface' is DOWN"
+    fi
+
+    # Clean up the config copy if we made one
+    rm -f "/etc/wireguard/${iface}.conf" 2>/dev/null || true
+
+    VPN_ACTIVE=false
+}
+
+# Verify connectivity to the target through the VPN
+vpn_verify() {
+    local iface="$1"
+
+    if $DRY_RUN; then
+        echo -e "  ${YELLOW}[DRY-RUN]${NC} Connectivity check: ping -c1 -W3 -I $iface $TARGET"
+        return 0
+    fi
+
+    log_step "Verifying connectivity to $TARGET via $iface"
+
+    # Try ICMP first
+    if ping -c1 -W3 -I "$iface" "$TARGET" &>/dev/null; then
+        log_ok "Target $TARGET is reachable via $iface (ICMP)"
+        return 0
+    fi
+
+    # ICMP might be blocked — try a TCP connection on a common port
+    log_warn "ICMP blocked or no reply — trying TCP probe"
+    if ensure_cmd nmap; then
+        local result
+        result=$(nmap -sn -e "$iface" "$TARGET" 2>/dev/null | grep -c "Host is up" || true)
+        if [ "$result" -ge 1 ] 2>/dev/null; then
+            log_ok "Target $TARGET is reachable via $iface (TCP probe)"
+            return 0
+        fi
+    fi
+
+    log_warn "Could not confirm connectivity to $TARGET via $iface"
+    log_warn "Scan will proceed anyway — results may be incomplete if tunnel is misconfigured"
+    return 0
+}
+
 # Run a command, log it, handle dry-run mode. Captures output to a file.
 # Usage: run_cmd <description> <output_file> <command...>
 run_cmd() {
@@ -346,6 +539,9 @@ while [[ $# -gt 0 ]]; do
         -s|--steps)     STEPS="$2"; shift 2 ;;
         -t|--timing)    TIMING="$2"; shift 2 ;;
         -w|--wordlist)  WORDLIST_DIR="$2"; shift 2 ;;
+        --vpn)          VPN_CONF="$2"; shift 2 ;;
+        --vpn-iface)    VPN_IFACE="$2"; shift 2 ;;
+        --vpn-keep)     VPN_KEEP=true; shift ;;
         --skip-udp)     SKIP_UDP=true; shift ;;
         --skip-bruteforce) SKIP_BRUTEFORCE=true; shift ;;
         --dry-run)      DRY_RUN=true; shift ;;
@@ -367,6 +563,32 @@ if [ -z "$TARGET" ]; then
     log_error "No target specified."
     echo ""
     usage
+fi
+
+# =============================================================================
+# Cleanup trap — ensure VPN tunnel is torn down on exit/interrupt
+# =============================================================================
+cleanup() {
+    if $VPN_ACTIVE && [ -n "$VPN_IFACE" ]; then
+        echo ""
+        vpn_down "$VPN_IFACE"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+# =============================================================================
+# WireGuard VPN setup (if --vpn specified)
+# =============================================================================
+if [ -n "$VPN_CONF" ]; then
+    log_banner "WireGuard VPN Setup"
+    vpn_up "$VPN_CONF" "$VPN_IFACE"
+    vpn_verify "$VPN_IFACE"
+
+    # Set interface options for tools that support source binding
+    NMAP_IFACE_OPT="-e $VPN_IFACE "
+    CURL_IFACE_OPT="--interface $VPN_IFACE "
+    log_ok "Tools will bind to interface: $VPN_IFACE"
+    echo ""
 fi
 
 # =============================================================================
@@ -490,6 +712,8 @@ Started:    $(date -u +"%Y-%m-%d %H:%M:%S UTC")
 Skip UDP:   $SKIP_UDP
 Skip Brute: $SKIP_BRUTEFORCE
 Dry Run:    $DRY_RUN
+VPN Config: ${VPN_CONF:-none}
+VPN Iface:  ${VPN_ACTIVE:+$VPN_IFACE}${VPN_ACTIVE:-none}
 Run As:     $(whoami)
 EOF
 
@@ -541,7 +765,7 @@ if should_run 1; then
     # Certificate transparency via crt.sh
     if ensure_cmd curl && ensure_cmd jq; then
         run_cmd "Certificate transparency lookup (crt.sh)" "$P/ct_subs.txt" \
-            "curl -s 'https://crt.sh/?q=%25.$DOMAIN&output=json' | jq -r '.[].name_value' 2>/dev/null | sort -u"
+            "curl -s $CURL_IFACE_OPT'https://crt.sh/?q=%25.$DOMAIN&output=json' | jq -r '.[].name_value' 2>/dev/null | sort -u"
     fi
 
     # Combine and deduplicate subdomains
@@ -573,7 +797,7 @@ if should_run 2; then
 
     # Full TCP SYN scan
     run_cmd "TCP SYN scan — all 65535 ports" "$S/tcp_scan.log" \
-        "nmap -sS -p- --min-rate 10000 -T${TIMING} '$TARGET' -oA '$S/tcp_all_ports'"
+        "nmap $NMAP_IFACE_OPT-sS -p- --min-rate 10000 -T${TIMING} '$TARGET' -oA '$S/tcp_all_ports'"
 
     # Extract open ports
     if ! $DRY_RUN; then
@@ -589,13 +813,13 @@ if should_run 2; then
     # Detailed service scan on open ports
     if [ -n "$OPEN_TCP_PORTS" ] || $DRY_RUN; then
         run_cmd "Service version detection + NSE scripts" "$S/detailed_scan.log" \
-            "nmap -sV -sC -O -p '${OPEN_TCP_PORTS:-1-1000}' -T${TIMING} '$TARGET' -oA '$S/detailed_scan'"
+            "nmap $NMAP_IFACE_OPT-sV -sC -O -p '${OPEN_TCP_PORTS:-1-1000}' -T${TIMING} '$TARGET' -oA '$S/detailed_scan'"
     fi
 
     # UDP scan
     if ! $SKIP_UDP; then
         run_cmd "UDP scan — top 50 ports" "$S/udp_scan.log" \
-            "nmap -sU --top-ports 50 -T${TIMING} '$TARGET' -oA '$S/udp_scan'"
+            "nmap $NMAP_IFACE_OPT-sU --top-ports 50 -T${TIMING} '$TARGET' -oA '$S/udp_scan'"
 
         if ! $DRY_RUN; then
             OPEN_UDP_PORTS=$(extract_udp_ports "$S/udp_scan.gnmap")
@@ -610,7 +834,7 @@ if should_run 2; then
 
     # OS fingerprinting
     run_cmd "OS fingerprinting" "$S/os_fingerprint.log" \
-        "nmap -O --osscan-guess -T${TIMING} '$TARGET' -oA '$S/os_fingerprint'"
+        "nmap $NMAP_IFACE_OPT-O --osscan-guess -T${TIMING} '$TARGET' -oA '$S/os_fingerprint'"
 fi
 
 # Reload ports from disk if running selective steps
@@ -671,7 +895,7 @@ if should_run 3; then
                 "/elmah.axd" "/trace.axd"
             )
             for path in "${SENSITIVE_PATHS[@]}"; do
-                code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 "${BASE_URL}${path}" 2>/dev/null || echo "000")
+                code=$(curl -sk $CURL_IFACE_OPT-o /dev/null -w "%{http_code}" --max-time 5 "${BASE_URL}${path}" 2>/dev/null || echo "000")
                 status=""
                 if [ "$code" = "200" ]; then
                     status="${GREEN}200 FOUND${NC}"
@@ -730,7 +954,7 @@ if should_run 4; then
             "ssh-audit '$TARGET'"
 
         run_cmd "SSH nmap scripts" "$A/ssh_nmap.txt" \
-            "nmap --script ssh2-enum-algos,ssh-auth-methods -p 22 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script ssh2-enum-algos,ssh-auth-methods -p 22 -T${TIMING} '$TARGET'"
     else
         log_skip "SSH (port 22 not open)"
     fi
@@ -738,7 +962,7 @@ if should_run 4; then
     # FTP
     if port_open 21 || $DRY_RUN; then
         run_cmd "FTP enumeration (anonymous check)" "$A/ftp_nmap.txt" \
-            "nmap --script ftp-anon,ftp-syst,ftp-vsftpd-backdoor -p 21 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script ftp-anon,ftp-syst,ftp-vsftpd-backdoor -p 21 -T${TIMING} '$TARGET'"
     else
         log_skip "FTP (port 21 not open)"
     fi
@@ -746,7 +970,7 @@ if should_run 4; then
     # RDP
     if port_open 3389 || $DRY_RUN; then
         run_cmd "RDP enumeration" "$A/rdp_nmap.txt" \
-            "nmap --script rdp-enum-encryption,rdp-ntlm-info -p 3389 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script rdp-enum-encryption,rdp-ntlm-info -p 3389 -T${TIMING} '$TARGET'"
     else
         log_skip "RDP (port 3389 not open)"
     fi
@@ -754,7 +978,7 @@ if should_run 4; then
     # Telnet
     if port_open 23; then
         run_cmd "Telnet banner grab" "$A/telnet_nmap.txt" \
-            "nmap --script telnet-ntlm-info -p 23 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script telnet-ntlm-info -p 23 -T${TIMING} '$TARGET'"
     fi
 fi
 
@@ -777,7 +1001,7 @@ if should_run 5; then
             "crackmapexec smb '$TARGET' --shares -u '' -p ''"
 
         run_cmd "SMB vulnerability scan (nmap)" "$S/smb_vulns.txt" \
-            "nmap --script smb-vuln-ms17-010,smb-vuln-ms08-067,smb-vuln-cve-2020-0796,smb-enum-shares,smb-enum-users -p 445 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script smb-vuln-ms17-010,smb-vuln-ms08-067,smb-vuln-cve-2020-0796,smb-enum-shares,smb-enum-users -p 445 -T${TIMING} '$TARGET'"
 
         run_if crackmapexec "RID brute-force (user enumeration)" "$S/rid_brute.txt" \
             "crackmapexec smb '$TARGET' -u '' -p '' --rid-brute"
@@ -811,7 +1035,7 @@ if should_run 6; then
         fi
 
         run_cmd "SMTP open relay and banner" "$M/smtp_nmap.txt" \
-            "nmap --script smtp-open-relay,smtp-commands,smtp-ntlm-info -p 25,465,587 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script smtp-open-relay,smtp-commands,smtp-ntlm-info -p 25,465,587 -T${TIMING} '$TARGET'"
     else
         log_skip "SMTP (ports 25/465/587 not open)"
     fi
@@ -880,7 +1104,7 @@ if should_run 8; then
     # MySQL (3306)
     if port_open 3306 || $DRY_RUN; then
         run_cmd "MySQL nmap scripts" "$D/mysql_nmap.txt" \
-            "nmap --script mysql-info,mysql-enum,mysql-empty-password -p 3306 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script mysql-info,mysql-enum,mysql-empty-password -p 3306 -T${TIMING} '$TARGET'"
 
         run_if mysql "MySQL anonymous/root access check" "$D/mysql_access.txt" \
             "mysql -h '$TARGET' -u root --password='' -e 'SELECT user,host FROM mysql.user; SHOW DATABASES;' 2>&1"
@@ -891,7 +1115,7 @@ if should_run 8; then
     # PostgreSQL (5432)
     if port_open 5432 || $DRY_RUN; then
         run_cmd "PostgreSQL nmap scripts" "$D/pgsql_nmap.txt" \
-            "nmap --script pgsql-brute -p 5432 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script pgsql-brute -p 5432 -T${TIMING} '$TARGET'"
 
         run_if psql "PostgreSQL default credentials check" "$D/pgsql_access.txt" \
             "PGPASSWORD='' psql -h '$TARGET' -U postgres -c '\\l' 2>&1"
@@ -902,7 +1126,7 @@ if should_run 8; then
     # MSSQL (1433)
     if port_open 1433 || $DRY_RUN; then
         run_cmd "MSSQL nmap scripts" "$D/mssql_nmap.txt" \
-            "nmap --script ms-sql-info,ms-sql-ntlm-info,ms-sql-empty-password -p 1433 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script ms-sql-info,ms-sql-ntlm-info,ms-sql-empty-password -p 1433 -T${TIMING} '$TARGET'"
     else
         log_skip "MSSQL (port 1433 not open)"
     fi
@@ -910,7 +1134,7 @@ if should_run 8; then
     # Redis (6379)
     if port_open 6379 || $DRY_RUN; then
         run_cmd "Redis nmap scripts" "$D/redis_nmap.txt" \
-            "nmap --script redis-info -p 6379 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script redis-info -p 6379 -T${TIMING} '$TARGET'"
 
         if ensure_cmd redis-cli && ! $DRY_RUN; then
             log_step "Redis unauthenticated access check"
@@ -933,7 +1157,7 @@ if should_run 8; then
     # MongoDB (27017)
     if port_open 27017 || $DRY_RUN; then
         run_cmd "MongoDB nmap scripts" "$D/mongo_nmap.txt" \
-            "nmap --script mongodb-info,mongodb-databases -p 27017 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script mongodb-info,mongodb-databases -p 27017 -T${TIMING} '$TARGET'"
 
         run_if mongosh "MongoDB unauthenticated access check" "$D/mongo_access.txt" \
             "mongosh --host '$TARGET' --quiet --eval 'db.adminCommand(\"listDatabases\")' 2>&1"
@@ -956,7 +1180,7 @@ if should_run 9; then
             "rpcinfo -p '$TARGET'"
 
         run_cmd "NFS nmap scripts" "$N/nfs_nmap.txt" \
-            "nmap --script nfs-ls,nfs-showmount,nfs-statfs -p 111,2049 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script nfs-ls,nfs-showmount,nfs-statfs -p 111,2049 -T${TIMING} '$TARGET'"
     else
         log_skip "RPC (port 111 not open)"
     fi
@@ -996,7 +1220,7 @@ if should_run 9; then
         fi
 
         run_cmd "LDAP nmap scripts" "$N/ldap_nmap.txt" \
-            "nmap --script ldap-rootdse,ldap-search -p 389,636 -T${TIMING} '$TARGET'"
+            "nmap $NMAP_IFACE_OPT--script ldap-rootdse,ldap-search -p 389,636 -T${TIMING} '$TARGET'"
     else
         log_skip "LDAP (ports 389/636 not open)"
     fi
@@ -1033,7 +1257,7 @@ if should_run 10; then
     # Nmap vuln scripts across all open ports
     if [ -n "$OPEN_TCP_PORTS" ] || $DRY_RUN; then
         run_cmd "Nmap vulnerability scripts" "$V/nmap_vuln.log" \
-            "nmap --script vuln -p '${OPEN_TCP_PORTS:-1-1000}' -T${TIMING} '$TARGET' -oA '$V/vuln_scan'"
+            "nmap $NMAP_IFACE_OPT--script vuln -p '${OPEN_TCP_PORTS:-1-1000}' -T${TIMING} '$TARGET' -oA '$V/vuln_scan'"
     fi
 
     # searchsploit correlation from detailed scan
