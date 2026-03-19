@@ -73,7 +73,7 @@ fi
 
 [ -z "$EMAIL" ] && EMAIL="admin@${DOMAIN}"
 
-# If .env already exists, extract DB password from it to stay in sync
+# DB password: use --db-password flag, or existing .env, or generate new
 if [ -z "$DB_PASSWORD" ] && [ -f "/opt/enumethod/.env" ]; then
     DB_PASSWORD=$(grep -oP 'postgresql://enumethod:\K[^@]+' /opt/enumethod/.env 2>/dev/null || true)
 fi
@@ -344,12 +344,20 @@ log "Dependencies installed"
 step "8/15 — Generating .env configuration"
 
 ENV_FILE="$APP_DIR/.env"
-if [ ! -f "$ENV_FILE" ]; then
-    JWT_SECRET=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 64)
-    JWT_REFRESH_SECRET=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 64)
-    ENCRYPTION_SECRET=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 64)
 
-    cat > "$ENV_FILE" <<ENVFILE
+# Preserve existing secrets on re-deploy, generate fresh ones only if missing
+if [ -f "$ENV_FILE" ]; then
+    EXISTING_JWT=$(grep '^JWT_SECRET=' "$ENV_FILE" 2>/dev/null | cut -d'"' -f2 || true)
+    EXISTING_JWT_REFRESH=$(grep '^JWT_REFRESH_SECRET=' "$ENV_FILE" 2>/dev/null | cut -d'"' -f2 || true)
+    EXISTING_ENCRYPTION=$(grep '^ENCRYPTION_SECRET=' "$ENV_FILE" 2>/dev/null | cut -d'"' -f2 || true)
+fi
+
+JWT_SECRET="${EXISTING_JWT:-$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 64)}"
+JWT_REFRESH_SECRET="${EXISTING_JWT_REFRESH:-$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 64)}"
+ENCRYPTION_SECRET="${EXISTING_ENCRYPTION:-$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 64)}"
+
+# Always write .env to ensure DB_PASSWORD and DOMAIN stay in sync
+cat > "$ENV_FILE" <<ENVFILE
 DATABASE_URL="postgresql://enumethod:${DB_PASSWORD}@localhost:5432/enumethod"
 JWT_SECRET="${JWT_SECRET}"
 JWT_REFRESH_SECRET="${JWT_REFRESH_SECRET}"
@@ -361,26 +369,23 @@ SCRIPT_PATH="${APP_DIR}/enumerate.sh"
 RUNS_DIR="${APP_DIR}/runs"
 ENVFILE
 
-    chmod 600 "$ENV_FILE"
-    log "Generated .env with random secrets"
-else
-    log ".env already exists — skipping"
-fi
+chmod 600 "$ENV_FILE"
+log ".env written (secrets preserved if existing)"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 9. Generate Prisma client, migrate, seed, and build
 # ══════════════════════════════════════════════════════════════════════════════
 
-step "9/15 — Database migrations + build"
+step "9/15 — Database schema + seed + build"
 
 cd "$APP_DIR"
 # Source .env so DATABASE_URL is available for Prisma
 set -a; source "$ENV_FILE"; set +a
 
 pnpm exec prisma generate
-pnpm exec prisma migrate deploy
+pnpm exec prisma db push --accept-data-loss
 pnpm exec tsx scripts/seed.ts
-log "Database migrated and seeded"
+log "Database schema synced and seeded"
 
 # Build after Prisma client is generated
 pnpm exec turbo build
