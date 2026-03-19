@@ -53,12 +53,19 @@
     <h2>Progress</h2>
     <div class="progress-header">
       <span class="step-label" id="step-label">Starting...</span>
-      <span class="status-badge running" id="status-badge">Running</span>
+      <div style="display:flex; align-items:center; gap:0.75rem;">
+        <span class="status-badge running" id="status-badge">Running</span>
+        <button class="btn btn-cancel" id="cancel-btn" style="display:none;" onclick="cancelRun()">Cancel</button>
+      </div>
     </div>
     <div class="step-bar" id="step-bar">
       {% for i in range(1, 12) %}
       <div class="step" title="Step {{ i }}: {{ steps[i] }}"></div>
       {% endfor %}
+    </div>
+    <div class="detail-bar" id="detail-bar"></div>
+    <div class="sub-progress" id="sub-progress" style="display:none;">
+      <div class="sub-progress-fill" id="sub-progress-fill"></div>
     </div>
     <div class="log-output" id="log-output"></div>
   </div>

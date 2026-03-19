@@ -147,6 +147,21 @@ def api_create_run():
     return jsonify({"run_id": run_id}), 201
 
 
+# ── API: Cancel a run ────────────────────────────────────────────────────────
+
+@app.route("/api/runs/<int:run_id>/cancel", methods=["POST"])
+@login_required
+def api_cancel_run(run_id):
+    run = database.get_run(run_id)
+    if not run:
+        return jsonify({"error": "Not found"}), 404
+    if run["status"] != "running":
+        return jsonify({"error": "Run is not active"}), 409
+    if runner.cancel_run(run_id):
+        return jsonify({"ok": True})
+    return jsonify({"error": "Could not cancel run"}), 500
+
+
 # ── API: List runs ──────────────────────────────────────────────────────────
 
 @app.route("/api/runs", methods=["GET"])
@@ -175,11 +190,11 @@ def api_stream(run_id):
 
     def generate():
         # Send buffered output first
-        lines, step = runner.get_buffered_output(run_id)
-        catchup = json.dumps({"lines": lines, "step": step})
+        lines, step, detail, progress = runner.get_buffered_output(run_id)
+        catchup = json.dumps({"lines": lines, "step": step, "detail": detail, "progress": progress})
         yield f"event: catchup\ndata: {catchup}\n\n"
 
-        if run["status"] in ("completed", "failed"):
+        if run["status"] in ("completed", "failed", "cancelled"):
             yield f"event: status\ndata: {json.dumps({'status': run['status'], 'step': step})}\n\n"
             return
 
@@ -188,17 +203,18 @@ def api_stream(run_id):
         try:
             while True:
                 try:
-                    event_type, data, step = q.get(timeout=15)
+                    event_type, data, payload = q.get(timeout=15)
                 except queue.Empty:
                     yield ": heartbeat\n\n"
                     continue
 
                 if event_type == "output":
-                    payload = json.dumps({"line": data, "step": step})
-                    yield f"event: output\ndata: {payload}\n\n"
+                    evt = {"line": data, "step": payload["step"],
+                           "detail": payload["detail"], "progress": payload["progress"]}
+                    yield f"event: output\ndata: {json.dumps(evt)}\n\n"
                 elif event_type == "status":
-                    payload = json.dumps({"status": data, "step": step})
-                    yield f"event: status\ndata: {payload}\n\n"
+                    evt = {"status": data, "step": payload["step"]}
+                    yield f"event: status\ndata: {json.dumps(evt)}\n\n"
                     return
         except GeneratorExit:
             pass

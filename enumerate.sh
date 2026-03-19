@@ -777,12 +777,19 @@ if should_run 1; then
 
         # Resolve subdomains
         if [ -s "$P/all_subs.txt" ] && ensure_cmd dig; then
-            log_step "Resolving discovered subdomains"
+            local resolve_total
+            resolve_total=$(wc -l < "$P/all_subs.txt" 2>/dev/null || echo 0)
+            log_step "Resolving ${resolve_total} discovered subdomains"
+            local resolve_count=0
             while IFS= read -r sub; do
+                resolve_count=$((resolve_count + 1))
+                if (( resolve_count % 100 == 0 )) || (( resolve_count == resolve_total )); then
+                    echo -e "${CYAN}[*]${NC} Resolving subdomains: ${resolve_count}/${resolve_total}"
+                fi
                 ip=$(dig +short "$sub" 2>/dev/null | head -1)
                 [ -n "$ip" ] && echo "$sub -> $ip"
             done < "$P/all_subs.txt" > "$P/resolved_hosts.txt" 2>/dev/null || true
-            log_ok "Resolved hosts → $P/resolved_hosts.txt"
+            log_ok "Resolved ${resolve_count}/${resolve_total} subdomains → $P/resolved_hosts.txt"
         fi
     fi
 fi
