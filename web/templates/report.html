@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}Report #{{ run_id }} — enumethod{% endblock %}
+{% block body %}
+<iframe class="report-frame" src="/api/runs/{{ run_id }}/report"></iframe>
+{% endblock %}

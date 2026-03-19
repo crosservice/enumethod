@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Settings — enumethod{% endblock %}
+{% block body %}
+<div class="container">
+  <h1>Settings</h1>
+
+  <h2>Change Password</h2>
+  <form id="pw-form" style="max-width: 420px;">
+    <div class="form-group">
+      <label>Current Password</label>
+      <input type="password" id="current_password" required>
+    </div>
+    <div class="form-group">
+      <label>New Password</label>
+      <input type="password" id="new_password" required minlength="8">
+    </div>
+    <div class="form-group">
+      <label>Confirm New Password</label>
+      <input type="password" id="confirm_password" required minlength="8">
+    </div>
+    <button type="submit" class="btn btn-primary">Update Password</button>
+    <div id="pw-msg" style="margin-top: 1rem;"></div>
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById("pw-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById("pw-msg");
+  msg.textContent = "";
+  msg.style.color = "";
+
+  const body = {
+    current_password: document.getElementById("current_password").value,
+    new_password: document.getElementById("new_password").value,
+    confirm_password: document.getElementById("confirm_password").value,
+  };
+
+  const res = await fetch("/api/change-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const data = await res.json();
+
+  if (res.ok) {
+    msg.style.color = "var(--green)";
+    msg.textContent = "Password updated successfully.";
+    e.target.reset();
+  } else {
+    msg.style.color = "var(--red)";
+    msg.textContent = data.error || "Something went wrong.";
+  }
+});
+</script>
+{% endblock %}

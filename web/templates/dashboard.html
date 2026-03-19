@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — enumethod{% endblock %}
+{% block body %}
+<div class="container">
+  <h1>New Enumeration</h1>
+
+  <form id="scan-form">
+    <div class="form-row">
+      <div class="form-group">
+        <label>Target IP / Hostname *</label>
+        <input type="text" id="target_ip" placeholder="10.10.10.1" required>
+      </div>
+      <div class="form-group">
+        <label>Domain</label>
+        <input type="text" id="domain" placeholder="example.com">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Steps</label>
+        <input type="text" id="steps" placeholder="all (or 1,2,5)">
+      </div>
+      <div class="form-group">
+        <label>Timing (nmap 0-5)</label>
+        <select id="timing">
+          <option value="0">0 — Paranoid</option>
+          <option value="1">1 — Sneaky</option>
+          <option value="2">2 — Polite</option>
+          <option value="3">3 — Normal</option>
+          <option value="4" selected>4 — Aggressive</option>
+          <option value="5">5 — Insane</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Wordlist Override</label>
+      <input type="text" id="wordlist" placeholder="/usr/share/seclists/...">
+    </div>
+
+    <div class="checkbox-group">
+      <label><input type="checkbox" id="skip_udp"> Skip UDP</label>
+      <label><input type="checkbox" id="skip_bruteforce"> Skip Brute-force</label>
+      <label><input type="checkbox" id="dry_run"> Dry Run</label>
+    </div>
+
+    <button type="submit" class="btn btn-start" id="start-btn">Start Enumeration</button>
+  </form>
+
+  <!-- Progress -->
+  <div class="progress-section" id="progress">
+    <h2>Progress</h2>
+    <div class="progress-header">
+      <span class="step-label" id="step-label">Starting...</span>
+      <span class="status-badge running" id="status-badge">Running</span>
+    </div>
+    <div class="step-bar" id="step-bar">
+      {% for i in range(1, 12) %}
+      <div class="step" title="Step {{ i }}: {{ steps[i] }}"></div>
+      {% endfor %}
+    </div>
+    <div class="log-output" id="log-output"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}
