@@ -44,7 +44,9 @@ fi
 step "Installing dependencies"
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
-step "Running database migrations"
+step "Running Prisma generate + migrations"
+set -a; source "$APP_DIR/.env"; set +a
+pnpm exec prisma generate
 pnpm exec prisma migrate deploy
 
 step "Building application"

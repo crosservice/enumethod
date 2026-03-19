@@ -324,11 +324,10 @@ cd "$APP_DIR"
 chmod +x "$APP_DIR/enumerate.sh"
 mkdir -p "$APP_DIR/runs"
 
-# Install dependencies and build
+# Install dependencies
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
-pnpm exec turbo build
 
-log "Application built"
+log "Dependencies installed"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 8. Generate .env
@@ -361,16 +360,23 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 9. Run migrations + seed
+# 9. Generate Prisma client, migrate, seed, and build
 # ══════════════════════════════════════════════════════════════════════════════
 
-step "9/15 — Running database migrations and seed"
+step "9/15 — Database migrations + build"
 
 cd "$APP_DIR"
+# Source .env so DATABASE_URL is available for Prisma
+set -a; source "$ENV_FILE"; set +a
+
+pnpm exec prisma generate
 pnpm exec prisma migrate deploy
 pnpm exec tsx scripts/seed.ts
-
 log "Database migrated and seeded"
+
+# Build after Prisma client is generated
+pnpm exec turbo build
+log "Application built"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 10. Create systemd services
