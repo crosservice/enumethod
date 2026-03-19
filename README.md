@@ -6,7 +6,7 @@ Automated server enumeration toolkit implementing an 11-step attack chain for au
 
 **v2** features a full-stack web interface with real-time WebSocket streaming, role-based access control, pause/resume/cancel, AI-powered security assessments, an encrypted credential vault, searchable reports, and single-command deployment.
 
-> **Legal:** Only use on systems you own or have explicit written authorization to test.
+> **Legal:** Only use on systems you own or have explicit written authorization to test. Unauthorized scanning is illegal and may result in criminal prosecution. See [Legal and Ethical Use](#legal-and-ethical-use) below.
 
 ## Quick Start
 
@@ -200,6 +200,37 @@ enumethod/
   previous_versions/
     v1/                      # Legacy Flask/SQLite web app
 ```
+
+## Legal and Ethical Use
+
+Enumethod is a penetration testing tool designed for **authorized security assessments only**.
+
+### Requirements
+
+- **Written authorization** from the system owner is mandatory before scanning any target
+- Authorization must specify permitted IP addresses, domains, and test types
+- Retain signed Rules of Engagement (RoE) or equivalent documentation for every engagement
+
+### Responsibilities
+
+- **Scope compliance** — use `--steps`, `--skip-udp`, and `--skip-bruteforce` flags to stay within authorized boundaries
+- **Impact awareness** — vulnerability scanning, brute-forcing, and authentication testing can trigger alerts, disrupt services, or lock accounts. Use `--dry-run` to preview before executing
+- **Data protection** — scan results contain sensitive information (vulnerabilities, credentials, network architecture). Secure all reports and run data. Delete when engagements end
+- **Prompt reporting** — report findings to the system owner with remediation guidance. Follow responsible disclosure practices
+
+### Legal Frameworks
+
+Unauthorized computer access is a criminal offense in most jurisdictions, including:
+- **US** — Computer Fraud and Abuse Act (CFAA), 18 U.S.C. 1030
+- **UK** — Computer Misuse Act 1990
+- **EU** — Directive 2013/40/EU on attacks against information systems
+- **Australia** — Criminal Code Act 1995, Part 10.7
+
+Consult legal counsel if you are unsure whether your planned testing is authorized.
+
+For detailed guidance, see [docs/USAGE.md — Legal and Ethical Use](docs/USAGE.md#legal-and-ethical-use) and [docs/DEPLOYMENT.md — Legal and Ethical Use](docs/DEPLOYMENT.md#legal-and-ethical-use).
+
+---
 
 ## Documentation
 

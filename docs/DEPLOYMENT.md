@@ -44,7 +44,7 @@ Optional:
 6. Server hardening (kernel, fail2ban, auto-updates, core dumps, umask)
 7. Deploy application (copy/build)
 8. Generate .env with random secrets
-9. Run Prisma migrations + seed
+9. Prisma schema sync (db push) + seed
 10. Create systemd services
 11. Configure nginx reverse proxy with rate limiting
 12. SSL via Let's Encrypt (or alternatives)
@@ -125,8 +125,8 @@ journalctl -u enumethod-web --no-pager -n 50
 ### Database issues
 ```bash
 cd /opt/enumethod
-sudo -u www-data pnpm exec prisma migrate status
-sudo -u www-data pnpm exec prisma migrate deploy
+pnpm exec prisma db push
+pnpm exec tsx scripts/seed.ts
 ```
 
 ### Nginx issues
@@ -141,3 +141,29 @@ Certbot auto-renews via systemd timer. Manual renewal:
 ```bash
 certbot renew --nginx
 ```
+
+---
+
+## Legal and Ethical Use
+
+Enumethod is a penetration testing tool. Deploying it carries legal and ethical responsibilities.
+
+### Authorization Requirements
+
+- **Written authorization is mandatory.** Never deploy or run scans against systems without explicit written permission from the system owner. Verbal agreements are insufficient.
+- **Scope your engagement.** Authorization should specify which IP addresses, domains, and test types are permitted. Configure Enumethod's target and step options to stay within scope.
+- **Retain proof of authorization.** Keep signed Rules of Engagement (RoE), statements of work, or equivalent documents for every engagement. Store them outside of Enumethod.
+
+### Deployment Considerations
+
+- **Restrict access.** The deploy script exposes a web interface on the public internet. Use strong passwords, change the default admin credentials immediately, and limit user accounts to authorized personnel only.
+- **Network isolation.** When possible, deploy Enumethod on a network segment that only has access to authorized targets. UFW is configured to restrict inbound access, but outbound scan traffic is unrestricted by design.
+- **Data sensitivity.** Scan results may contain sensitive information (credentials, vulnerabilities, internal network details). Treat the `/opt/enumethod/runs/` directory and the PostgreSQL database as confidential. Secure backups and control who has server access.
+- **Credential vault.** AI provider API keys are encrypted at rest, but the encryption master key is in `.env` on the same server. Protect `.env` file permissions (the deploy script sets `chmod 600`).
+
+### Compliance
+
+- **Know your jurisdiction.** Unauthorized computer access is a criminal offense in most jurisdictions (e.g., CFAA in the US, Computer Misuse Act in the UK, StGB 202a-c in Germany). Penalties include fines and imprisonment.
+- **Industry standards.** Follow established frameworks such as PTES (Penetration Testing Execution Standard), OWASP Testing Guide, or OSSTMM. Document your methodology and findings.
+- **Data handling.** If scans reveal personal data or credentials, handle them in accordance with applicable regulations (GDPR, CCPA, HIPAA, etc.). Include data handling procedures in your Rules of Engagement.
+- **Disclosure.** Follow responsible disclosure practices. Report vulnerabilities to the system owner promptly and provide adequate time for remediation before any public disclosure.

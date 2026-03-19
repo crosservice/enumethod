@@ -1,5 +1,38 @@
 # Enumethod Usage Guide
 
+## Legal and Ethical Use
+
+Enumethod is a penetration testing and security assessment tool. **You must have explicit written authorization before scanning any system you do not own.** Unauthorized scanning is illegal in most jurisdictions and can result in criminal prosecution.
+
+### Before You Scan
+
+1. **Obtain written authorization.** Ensure you have a signed Rules of Engagement (RoE) or equivalent document from the system owner that explicitly permits the types of testing Enumethod performs (port scanning, service enumeration, brute-forcing, vulnerability scanning).
+2. **Verify scope.** Confirm which IP addresses, domains, and ports are in scope. Use the `--steps` and `--skip-*` flags to limit testing to authorized activities.
+3. **Understand the impact.** Some enumeration steps are aggressive — brute-force attacks (step 10), vulnerability scanning (step 5), and authentication testing (step 6) can trigger IDS/IPS alerts, cause service disruptions, or lock out accounts. Discuss acceptable risk levels with the system owner.
+4. **Document everything.** Keep records of authorization, scan configurations, timestamps, and findings. Enumethod's run history and reports serve as part of this documentation.
+
+### Responsible Use Guidelines
+
+- **Never scan production systems during business hours** unless explicitly authorized and the system owner accepts the risk of potential disruption.
+- **Use the dry-run flag** (`--dry-run`) to preview commands before executing against a target for the first time.
+- **Start with passive steps** (step 1) and lower timing values (`-t 2` or `-t 3`) before running aggressive scans.
+- **Protect your findings.** Scan results may reveal sensitive vulnerabilities, credentials, and internal network architecture. Store and transmit reports securely. Delete scan data when the engagement ends unless retention is required.
+- **Report vulnerabilities promptly** to the system owner with clear remediation guidance. The AI assessment feature can help structure findings by severity.
+- **Role-based access matters.** Give view-only accounts to stakeholders who need to see results but shouldn't be able to launch scans. Reserve admin access for authorized testers.
+
+### Legal Frameworks
+
+Unauthorized access to computer systems is a criminal offense under laws including but not limited to:
+- **United States** — Computer Fraud and Abuse Act (CFAA), 18 U.S.C. 1030
+- **United Kingdom** — Computer Misuse Act 1990
+- **European Union** — Directive 2013/40/EU on attacks against information systems
+- **Germany** — StGB 202a-c (data espionage, phishing, data interception)
+- **Australia** — Criminal Code Act 1995, Part 10.7
+
+Always consult with legal counsel if you are unsure whether your planned testing activity is authorized.
+
+---
+
 ## Getting Started
 
 ### Local Development

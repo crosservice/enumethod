@@ -4,6 +4,8 @@
 
 Enumethod v2 is a full-stack web application that wraps `enumerate.sh` (an 11-step automated penetration testing script) in a modern interface with real-time streaming, AI-powered analysis, and single-command deployment.
 
+> **Authorization required.** This system is designed for authorized penetration testing engagements only. See [USAGE.md — Legal and Ethical Use](USAGE.md#legal-and-ethical-use) for requirements.
+
 ## Stack
 
 | Layer      | Technology                        |

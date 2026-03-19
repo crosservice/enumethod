@@ -4,6 +4,8 @@ Base URL: `/api`
 
 All endpoints except auth require a Bearer token in the Authorization header.
 
+> **Important:** This API controls a penetration testing tool. Only use it against systems you have explicit written authorization to test. The `POST /runs` endpoint launches active scans that can trigger IDS alerts and disrupt services. See [USAGE.md — Legal and Ethical Use](USAGE.md#legal-and-ethical-use) for requirements.
+
 ## Auth
 
 ### POST /auth/login
