@@ -211,6 +211,54 @@ export class RunManagerService implements OnModuleInit {
     state.lines.push(clean);
   }
 
+  private compileErrorLog(state: ActiveRun, code: number | null): string {
+    const errorLines: string[] = [];
+
+    // Collect lines containing errors, warnings, failures
+    for (const line of state.lines) {
+      if (
+        line.includes('[-]') ||
+        line.includes('[!]') ||
+        line.includes('[SKIP]') ||
+        line.includes('ENUM_CMD_SKIP') ||
+        line.includes('error') ||
+        line.includes('Error') ||
+        line.includes('FAILED') ||
+        line.includes('failed') ||
+        line.includes('Permission denied') ||
+        line.includes('not found') ||
+        line.includes('No such file') ||
+        (line.includes('ENUM_CMD_END') && !line.includes('::0##'))
+      ) {
+        errorLines.push(line);
+      }
+    }
+
+    // Always include the last 20 lines for context
+    const tail = state.lines.slice(-20);
+
+    const parts: string[] = [];
+    parts.push(`Exit code: ${code}`);
+    parts.push(`Total output lines: ${state.lines.length}`);
+    parts.push(`Last step reached: ${state.currentStep}/11`);
+    parts.push('');
+
+    if (errorLines.length > 0) {
+      parts.push(`── Errors & Warnings (${errorLines.length} lines) ──`);
+      // Cap at 200 error lines to avoid huge logs
+      parts.push(...errorLines.slice(0, 200));
+      if (errorLines.length > 200) {
+        parts.push(`... and ${errorLines.length - 200} more`);
+      }
+      parts.push('');
+    }
+
+    parts.push('── Last 20 Lines ──');
+    parts.push(...tail);
+
+    return parts.join('\n');
+  }
+
   private async handleExit(runId: number, code: number | null) {
     const state = this.activeRuns.get(runId);
     if (!state) return;
@@ -224,9 +272,14 @@ export class RunManagerService implements OnModuleInit {
       status = 'failed';
     }
 
+    // Compile error log for non-successful runs
+    const errorLog = status !== 'completed'
+      ? this.compileErrorLog(state, code)
+      : null;
+
     await this.prisma.run.update({
       where: { id: runId },
-      data: { status, finishedAt: new Date() },
+      data: { status, finishedAt: new Date(), errorLog },
     });
 
     this.gateway.emitStatus(runId, status, state.currentStep);

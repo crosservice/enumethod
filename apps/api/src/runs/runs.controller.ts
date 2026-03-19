@@ -35,6 +35,12 @@ export class RunsController {
     return this.runs.getOutputs(id);
   }
 
+  @Get(':id/log')
+  async getErrorLog(@Param('id', ParseIntIdPipe) id: number) {
+    const run = await this.runs.findById(id);
+    return { errorLog: run.errorLog || null };
+  }
+
   @Post()
   @UseGuards(RolesGuard)
   @Roles('admin')

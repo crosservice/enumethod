@@ -13,6 +13,7 @@ interface RunDetail {
   status: string;
   currentStep: number;
   currentCommand: string | null;
+  errorLog: string | null;
   startedAt: string | null;
   finishedAt: string | null;
 }
@@ -43,7 +44,7 @@ export default function RunDetailPage() {
   const [run, setRun] = useState<RunDetail | null>(null);
   const [outputs, setOutputs] = useState<RunOutput[]>([]);
   const [assessment, setAssessment] = useState<Assessment | null>(null);
-  const [activeTab, setActiveTab] = useState<'output' | 'report' | 'ai'>('output');
+  const [activeTab, setActiveTab] = useState<'output' | 'report' | 'ai' | 'log'>('output');
   const [search, setSearch] = useState('');
   const [expandedCmd, setExpandedCmd] = useState<number | null>(null);
   const [assessing, setAssessing] = useState(false);
@@ -185,17 +186,17 @@ export default function RunDetailPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-4 border-b border-border">
-        {(['output', 'report', 'ai'] as const).map((tab) => (
+        {(['output', 'report', 'ai', ...(run.errorLog ? ['log'] : [])] as const).map((tab) => (
           <button
             key={tab}
-            onClick={() => setActiveTab(tab)}
+            onClick={() => setActiveTab(tab as typeof activeTab)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               activeTab === tab
                 ? 'border-accent text-accent'
                 : 'border-transparent text-text-secondary hover:text-text'
             }`}
           >
-            {tab === 'output' ? 'Output' : tab === 'report' ? 'Report' : 'AI Assessment'}
+            {tab === 'output' ? 'Output' : tab === 'report' ? 'Report' : tab === 'log' ? 'Failure Log' : 'AI Assessment'}
           </button>
         ))}
       </div>
@@ -334,6 +335,15 @@ export default function RunDetailPage() {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Failure Log tab */}
+      {activeTab === 'log' && run.errorLog && (
+        <div className="card">
+          <pre className="bg-bg rounded p-4 text-xs font-mono whitespace-pre-wrap overflow-auto max-h-[600px] text-text-secondary">
+            {run.errorLog}
+          </pre>
         </div>
       )}
     </div>

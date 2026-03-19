@@ -34,6 +34,7 @@ model Run {
   currentCommand String?        @map("current_command") @db.VarChar(500)
   outputDir      String         @default("") @map("output_dir")
   pid            Int?
+  errorLog       String?        @map("error_log") @db.Text
   startedAt      DateTime?      @map("started_at")
   finishedAt     DateTime?      @map("finished_at")
   pausedAt       DateTime?      @map("paused_at")

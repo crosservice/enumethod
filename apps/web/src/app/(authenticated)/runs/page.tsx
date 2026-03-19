@@ -24,6 +24,15 @@ export default function RunsPage() {
   const [loading, setLoading] = useState(true);
   const limit = 20;
   const authUrl = (path: string) => `${path}${path.includes('?') ? '&' : '?'}token=${accessToken}`;
+  const [logModal, setLogModal] = useState<{ id: number; log: string } | null>(null);
+
+  const viewLog = async (id: number) => {
+    const res = await apiFetch(`/runs/${id}/log`);
+    if (res.ok) {
+      const data = await res.json();
+      setLogModal({ id, log: data.errorLog || 'No failure log recorded for this run.' });
+    }
+  };
 
   const handleDelete = async (id: number, target: string) => {
     if (!confirm(`Delete run #${id} (${target})? This removes all output files and cannot be undone.`)) return;
@@ -122,6 +131,14 @@ export default function RunsPage() {
                       <Link href={`/dashboard?rerun=${run.id}`} className="text-accent hover:text-accent-hover text-xs">
                         Rerun
                       </Link>
+                      {(run.status === 'failed' || run.status === 'cancelled') && (
+                        <button
+                          onClick={() => viewLog(run.id)}
+                          className="text-warning hover:text-warning/80 text-xs"
+                        >
+                          Log
+                        </button>
+                      )}
                       {run.status === 'completed' && (
                         <>
                           <a href={authUrl(`/api/runs/${run.id}/report`)} target="_blank" className="text-accent hover:text-accent-hover text-xs">
@@ -170,6 +187,21 @@ export default function RunsPage() {
           </div>
         )}
       </div>
+
+      {/* Error Log Modal */}
+      {logModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setLogModal(null)}>
+          <div className="bg-card border border-border rounded-lg max-w-3xl w-full max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-border">
+              <h3 className="font-semibold">Failure Log — Run #{logModal.id}</h3>
+              <button onClick={() => setLogModal(null)} className="text-text-secondary hover:text-text text-lg">&times;</button>
+            </div>
+            <pre className="p-4 overflow-auto flex-1 text-xs font-mono whitespace-pre-wrap text-text-secondary">
+              {logModal.log}
+            </pre>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
