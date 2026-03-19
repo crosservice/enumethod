@@ -45,11 +45,34 @@ cd enumethod
 chmod +x enumerate.sh
 ```
 
+### Local (CLI + Web App)
+
+Just needs Python 3 and nmap. Everything else is handled automatically:
+
+```bash
+# CLI only
+sudo ./enumerate.sh 10.10.10.50
+
+# Web app (auto-creates venv, installs deps, starts server)
+python3 run.py
+```
+
+### VPS (full production deploy)
+
+On a fresh Ubuntu 24.04 LTS server, the deploy script handles **everything** — system packages, Python venv, nginx, SSL, firewall, hardening, systemd service:
+
+```bash
+git clone <repo-url> enumethod
+sudo ./enumethod/web/deploy.sh -d enum.example.com
+```
+
+Point your DNS A record to the server first. That's the only prerequisite.
+
 ### Requirements
 
 - **OS:** Linux (Debian/Ubuntu-based recommended — auto-install uses `apt`)
 - **Root:** Must run as root or with `sudo`
-- **Minimum:** `nmap` (the script auto-installs everything else it needs)
+- **Minimum:** `nmap` and Python 3 (the script auto-installs everything else, and the deploy script installs nmap too)
 - **Recommended:** [SecLists](https://github.com/danielmiessler/SecLists) installed at `/usr/share/seclists` for wordlists
 
 To pre-install SecLists:
