@@ -125,6 +125,9 @@ systemctl start postgresql
 sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname = 'enumethod'" | grep -q 1 \
     || sudo -u postgres psql -c "CREATE USER enumethod WITH PASSWORD '${DB_PASSWORD}';"
 
+# Always update password to match current DB_PASSWORD (handles re-runs with new password)
+sudo -u postgres psql -c "ALTER USER enumethod WITH PASSWORD '${DB_PASSWORD}';"
+
 sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname = 'enumethod'" | grep -q 1 \
     || sudo -u postgres psql -c "CREATE DATABASE enumethod OWNER enumethod;"
 
