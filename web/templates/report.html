@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Report #{{ run_id }} — enumethod{% endblock %}
 {% block body %}
-<iframe class="report-frame" src="/api/runs/{{ run_id }}/report"></iframe>
+<div style="padding: 0.5rem 2rem; background: var(--card); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;">
+  <span style="color: var(--muted); font-size: 0.9rem;">Run #{{ run_id }}</span>
+  <a href="/api/runs/{{ run_id }}/export" class="btn btn-start" style="padding: 0.4rem 1rem; font-size: 0.85rem; text-decoration: none;">Export ZIP</a>
+</div>
+<iframe class="report-frame" src="/api/runs/{{ run_id }}/report" style="height: calc(100vh - 105px);"></iframe>
 {% endblock %}

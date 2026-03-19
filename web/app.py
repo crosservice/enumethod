@@ -1,8 +1,10 @@
+import io
 import json
 import os
 import queue
 import re
 import time
+import zipfile
 from functools import wraps
 
 from flask import (
@@ -240,6 +242,39 @@ def api_report(run_id):
         return jsonify({"error": "Report not yet generated"}), 404
 
     return send_file(report_path, mimetype="text/html")
+
+
+# ── Export as zip ────────────────────────────────────────────────────────────
+
+@app.route("/api/runs/<int:run_id>/export")
+@login_required
+def api_export(run_id):
+    run = database.get_run(run_id)
+    if not run:
+        return jsonify({"error": "Not found"}), 404
+
+    output_dir = run["output_dir"]
+    if not os.path.isdir(output_dir):
+        return jsonify({"error": "Output directory not found"}), 404
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, dirs, files in os.walk(output_dir):
+            for f in files:
+                filepath = os.path.join(root, f)
+                arcname = os.path.relpath(filepath, os.path.dirname(output_dir))
+                zf.write(filepath, arcname)
+    buf.seek(0)
+
+    safe_target = re.sub(r"[^a-zA-Z0-9._-]", "_", run["target_ip"])
+    filename = f"enumethod_{safe_target}_run{run_id}.zip"
+
+    return send_file(
+        buf,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

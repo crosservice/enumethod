@@ -22,6 +22,7 @@ async function loadRuns() {
       const actions = [];
       if (r.status === "completed") {
         actions.push(`<a href="/report/${r.id}">View Report</a>`);
+        actions.push(`<a href="/api/runs/${r.id}/export">Export ZIP</a>`);
       }
       if (r.status === "running") {
         actions.push(`<a href="/">Watch Live</a>`);
