@@ -215,7 +215,7 @@ apps/api/dist/
 apps/web/.next/
 
 # Run output directories
-runs/
+/runs/
 enum_*/
 
 # Environment overrides
