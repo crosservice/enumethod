@@ -1,0 +1,101 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                Int          @id @default(autoincrement())
+  username          String       @unique @db.VarChar(64)
+  passwordHash      String       @map("password_hash")
+  role              String       @default("view") @db.VarChar(10)
+  mustResetPassword Boolean      @default(false) @map("must_reset_password")
+  refreshToken      String?      @map("refresh_token")
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  runs              Run[]
+  credentials       Credential[]
+  settings          Setting[]
+
+  @@map("users")
+}
+
+model Run {
+  id             Int            @id @default(autoincrement())
+  targetIp       String         @map("target_ip") @db.VarChar(255)
+  domain         String         @default("") @db.VarChar(255)
+  arguments      Json           @default("{}")
+  status         String         @default("pending") @db.VarChar(20)
+  currentStep    Int            @default(0) @map("current_step")
+  currentCommand String?        @map("current_command") @db.VarChar(500)
+  outputDir      String         @default("") @map("output_dir")
+  pid            Int?
+  startedAt      DateTime?      @map("started_at")
+  finishedAt     DateTime?      @map("finished_at")
+  pausedAt       DateTime?      @map("paused_at")
+  createdById    Int            @map("created_by")
+  createdBy      User           @relation(fields: [createdById], references: [id])
+
+  outputs        RunOutput[]
+  assessments    AiAssessment[]
+
+  @@map("runs")
+}
+
+model RunOutput {
+  id          Int       @id @default(autoincrement())
+  runId       Int       @map("run_id")
+  run         Run       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  stepNumber  Int       @map("step_number")
+  commandName String    @map("command_name") @db.VarChar(500)
+  outputText  String    @map("output_text") @db.Text
+  startedAt   DateTime? @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+  exitCode    Int?      @map("exit_code")
+
+  @@index([runId, stepNumber])
+  @@map("run_outputs")
+}
+
+model Credential {
+  id           Int      @id @default(autoincrement())
+  name         String   @db.VarChar(100)
+  provider     String   @db.VarChar(20)
+  encryptedKey String   @map("encrypted_key") @db.Text
+  iv           String   @db.VarChar(32)
+  authTag      String   @map("auth_tag") @db.VarChar(32)
+  createdById  Int      @map("created_by")
+  createdBy    User     @relation(fields: [createdById], references: [id])
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("credentials")
+}
+
+model AiAssessment {
+  id              Int      @id @default(autoincrement())
+  runId           Int      @map("run_id")
+  run             Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  provider        String   @db.VarChar(20)
+  promptUsed      String   @map("prompt_used") @db.Text
+  response        String   @db.Text
+  severitySummary Json?    @map("severity_summary")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@map("ai_assessments")
+}
+
+model Setting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique @db.VarChar(100)
+  value     String   @db.Text
+  updatedById Int?   @map("updated_by")
+  updatedBy User?    @relation(fields: [updatedById], references: [id])
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("settings")
+}

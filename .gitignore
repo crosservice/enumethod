@@ -205,3 +205,19 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ── Node.js / Monorepo ──────────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+.next/
+.turbo/
+apps/api/dist/
+apps/web/.next/
+
+# Run output directories
+runs/
+enum_*/
+
+# Environment overrides
+.env.local
+.env.*.local

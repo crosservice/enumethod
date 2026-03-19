@@ -456,15 +456,27 @@ run_cmd() {
     local outfile="$2"
     shift 2
 
+    # Pause control: wait while control file says PAUSE
+    local control_file="$OUTPUT_DIR/.enum_control"
+    while [ -f "$control_file" ] && grep -q "PAUSE" "$control_file" 2>/dev/null; do
+        echo "##ENUM_PAUSED##"
+        sleep 2
+    done
+
+    # Emit command start marker for web UI parsing
+    echo "##ENUM_CMD_START::${desc}::${outfile}##"
+
     log_step "$desc"
 
     if $DRY_RUN; then
         echo -e "  ${YELLOW}[DRY-RUN]${NC} $*"
+        echo "##ENUM_CMD_END::${desc}::0##"
         return 0
     fi
 
     if eval "$@" >> "$outfile" 2>&1; then
         log_ok "Done → $outfile"
+        echo "##ENUM_CMD_END::${desc}::0##"
     else
         local rc=$?
         # Non-zero exit is common for scanning tools (e.g., no results found)
@@ -473,6 +485,7 @@ run_cmd() {
         else
             log_warn "Exited with code $rc → $outfile"
         fi
+        echo "##ENUM_CMD_END::${desc}::${rc}##"
     fi
     return 0
 }
@@ -488,6 +501,7 @@ run_if() {
     if ensure_cmd "$tool"; then
         run_cmd "$desc" "$outfile" "$@"
     else
+        echo "##ENUM_CMD_SKIP::${desc}::${tool} not available — install failed##"
         log_skip "$desc (${tool} not available — install failed)"
     fi
 }

@@ -4,7 +4,7 @@ Automated server enumeration toolkit implementing an 11-step attack chain for au
 
 `enumerate.sh` performs passive recon, port scanning, service enumeration, web analysis, credential checks, SMB/SNMP/LDAP enumeration, vulnerability scanning, and more — all in a single run against a target. Missing tools are auto-installed via apt, pip, go, or snap.
 
-Includes a **web interface** for launching scans, monitoring progress in real time, viewing HTML reports, and managing past runs. Ships with a one-command deploy script for Linode/Ubuntu VPS.
+**v2** features a full-stack web interface with real-time WebSocket streaming, role-based access control, pause/resume/cancel, AI-powered security assessments, an encrypted credential vault, searchable reports, and single-command deployment.
 
 > **Legal:** Only use on systems you own or have explicit written authorization to test.
 
@@ -19,68 +19,55 @@ chmod +x enumerate.sh
 sudo ./enumerate.sh 10.10.10.50
 ```
 
-### Web App
+### Web App (local development)
 
 ```bash
-python3 run.py
+pnpm install
+cp .env.example .env    # edit DATABASE_URL with your PostgreSQL connection
+pnpm exec prisma generate
+pnpm exec prisma db push
+pnpm exec tsx scripts/seed.ts
+pnpm dev
 ```
 
-Creates the venv, installs dependencies, and starts the server. Open `http://localhost:5000` — login with `admin` / `TestifyThusly99@`.
+Open `http://localhost:3000` — login with `admin` / `TestifyThusly99@` (password reset required on first login).
 
 ### Deploy to VPS
 
 ```bash
-sudo ./web/deploy.sh -d enum.example.com --letsencrypt --email you@email.com
+sudo ./scripts/deploy.sh -d enum.example.com -e you@example.com
 ```
 
-See [Deployment](#deployment) for all SSL options and details.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for all options and details.
 
 ---
 
-## Installation
+## Stack
 
-```bash
-git clone <repo-url> enumethod
-cd enumethod
-chmod +x enumerate.sh
-```
+| Layer      | Technology                              |
+| ---------- | --------------------------------------- |
+| Frontend   | Next.js 14 (App Router) + Tailwind CSS  |
+| Backend    | Nest.js + Prisma ORM                    |
+| Database   | PostgreSQL                               |
+| Real-time  | Socket.IO (WebSocket)                    |
+| Auth       | JWT (access 15min + refresh 7d, rotation)|
+| Encryption | AES-256-GCM (credential vault)           |
+| AI         | Claude / OpenAI + NVD CVE enrichment    |
+| Deploy     | Ubuntu 24.04 + nginx + systemd           |
+| Monorepo   | pnpm workspaces + Turborepo              |
 
-### Local (CLI + Web App)
+---
 
-Just needs Python 3 and nmap. Everything else is handled automatically:
+## Web Interface Features
 
-```bash
-# CLI only
-sudo ./enumerate.sh 10.10.10.50
-
-# Web app (auto-creates venv, installs deps, starts server)
-python3 run.py
-```
-
-### VPS (full production deploy)
-
-On a fresh Ubuntu 24.04 LTS server, the deploy script handles **everything** — system packages, Python venv, nginx, SSL, firewall, hardening, systemd service:
-
-```bash
-git clone <repo-url> enumethod
-sudo ./enumethod/web/deploy.sh -d enum.example.com
-```
-
-Point your DNS A record to the server first. That's the only prerequisite.
-
-### Requirements
-
-- **OS:** Linux (Debian/Ubuntu-based recommended — auto-install uses `apt`)
-- **Root:** Must run as root or with `sudo`
-- **Minimum:** `nmap` and Python 3 (the script auto-installs everything else, and the deploy script installs nmap too)
-- **Recommended:** [SecLists](https://github.com/danielmiessler/SecLists) installed at `/usr/share/seclists` for wordlists
-
-To pre-install SecLists:
-
-```bash
-sudo apt install seclists        # Kali/Parrot
-sudo snap install seclists       # Ubuntu/Debian
-```
+- **Dashboard** — scan form with target IP, domain, steps, timing, wordlists, and toggles. Real-time output streaming via WebSocket with 11-segment step progress bar
+- **Pause / Resume / Cancel** — control running scans mid-execution
+- **Past Runs** — paginated table with status badges, links to reports and ZIP exports
+- **Run Detail** — tabbed view with searchable per-command output, embedded HTML report, and AI assessment
+- **AI Assessment** — Claude or OpenAI analyzes scan results with CVE enrichment from the NVD database. Configurable prompt template with severity summary
+- **User Management** — role-based access (admin / view), forced password reset on first login
+- **Credential Vault** — AES-256-GCM encrypted API key storage for AI providers
+- **Settings** — password change, AI prompt template editor
 
 ---
 
@@ -90,240 +77,77 @@ sudo snap install seclists       # Ubuntu/Debian
 sudo ./enumerate.sh <TARGET_IP> [OPTIONS]
 ```
 
-### Options
-
 | Flag | Description |
 |------|-------------|
 | `-d, --domain DOMAIN` | Domain name for passive recon (default: reverse DNS) |
 | `-o, --output DIR` | Output directory (default: `./enum_<IP>_<timestamp>`) |
-| `-s, --steps STEPS` | Comma-separated steps to run: `1-11` or `all` (default: `all`) |
+| `-s, --steps STEPS` | Comma-separated steps: `1-11` or `all` (default: `all`) |
 | `-t, --timing TIMING` | Nmap timing template `0-5` (default: `4`) |
 | `-w, --wordlist PATH` | Directory wordlist override |
-| `--vpn CONFIG` | Route all traffic through WireGuard (path to `.conf` file) |
-| `--vpn-iface NAME` | WireGuard interface name (default: `wg-enum`) |
-| `--vpn-keep` | Don't tear down the VPN tunnel on exit |
+| `--vpn CONFIG` | Route traffic through WireGuard (path to `.conf` file) |
 | `--skip-udp` | Skip UDP scanning (saves time) |
 | `--skip-bruteforce` | Skip directory/vhost brute-forcing |
 | `--dry-run` | Print commands without executing |
-| `-h, --help` | Show help message |
-
-### Examples
-
-```bash
-# All steps against a target
-sudo ./enumerate.sh 10.10.10.50
-
-# With domain and skip UDP
-sudo ./enumerate.sh 10.10.10.50 -d example.com --skip-udp
-
-# Only specific steps (port scan + web enum)
-sudo ./enumerate.sh 10.10.10.50 -s 2,5
-
-# Route through WireGuard VPN
-sudo ./enumerate.sh 10.10.10.50 --vpn /etc/wireguard/vpn.conf
-
-# Dry run to preview commands
-sudo ./enumerate.sh 10.10.10.50 --dry-run
-```
 
 ### Enumeration Steps
 
 | Step | Phase |
 |------|-------|
-| 1 | Passive Intelligence Gathering |
-| 2 | Port Scanning (TCP & UDP) |
-| 3 | Service Version & OS Detection |
-| 4 | Web Server Enumeration |
-| 5 | TLS/SSL Analysis |
-| 6 | Directory & VHost Brute-Forcing |
-| 7 | Authentication Service Probing |
-| 8 | SMB/NetBIOS Enumeration |
-| 9 | SNMP, LDAP, NFS & Mail Enumeration |
-| 10 | Vulnerability Scanning |
-| 11 | Results Consolidation |
-
-### Output
-
-All results are saved to the output directory (`./enum_<IP>_<timestamp>/` by default). Step 11 generates a single consolidated HTML report (`report/report.html`) containing:
-
-- Run metadata (target, domain, timing, timestamps)
-- Table of contents with jump links to every section
-- Vulnerability overview cards (critical/high/medium/low counts)
-- Open ports, service versions, key findings, sensitive files
-- Full raw tool output from every step in collapsible sections (click to expand)
-
----
-
-## Web Interface
-
-The `web/` directory contains a Flask-based web application for running enumerations through a browser.
-
-### Features
-
-- **Login** — session-based authentication with bcrypt-hashed passwords
-- **Dashboard** — form for target IP, domain, steps, timing, wordlist, and toggle options (skip UDP, skip brute-force, dry run). Starts the scan and streams output in real time via Server-Sent Events (SSE)
-- **Progress bar** — 11-segment visual indicator showing which step is active, with live log output
-- **Past runs** — table of all previous scans with status, step progress, timestamps, and links to view HTML reports
-- **Report viewer** — embedded iframe rendering the generated HTML report for any completed run
-- **Settings** — change the admin password (validates current password, enforces 8+ characters)
-
-### Architecture
-
-| File | Purpose |
-|------|---------|
-| `web/app.py` | Flask routes — auth, API, SSE streaming, report serving |
-| `web/config.py` | Credentials, paths, step name mapping |
-| `web/database.py` | SQLite schema (`runs` + `users` tables), bcrypt auth helpers |
-| `web/runner.py` | Subprocess management, ANSI stripping, step detection, pub/sub for SSE |
-| `web/requirements.txt` | flask, gunicorn, gevent, bcrypt |
-| `web/templates/` | Jinja2 templates (login, dashboard, runs, report, settings) |
-| `web/static/` | CSS (dark theme) and JS (dashboard SSE client, runs table loader) |
-| `web/deploy.sh` | One-command VPS deployment script |
-
-### Running Locally
-
-```bash
-python3 run.py
-```
-
-That's it. The launcher creates a venv, installs dependencies, and starts the server at `http://localhost:5000`. Default login: `admin` / `TestifyThusly99@`. Change the password from the Settings page after logging in.
-
-> **Note:** `enumerate.sh` requires root. The app calls it via `sudo`, so the user running `run.py` needs passwordless sudo for the script, or you can run it as root for local testing.
+| 1 | Passive Recon & OSINT |
+| 2 | Active Host Discovery |
+| 3 | Port Scanning & Service Enumeration |
+| 4 | Web Stack Fingerprinting |
+| 5 | Vulnerability Scanning |
+| 6 | Authentication Testing |
+| 7 | SMB / NetBIOS / RPC |
+| 8 | SNMP Enumeration |
+| 9 | LDAP / NFS / Databases |
+| 10 | Directory & VHost Brute-forcing |
+| 11 | Report Generation |
 
 ---
 
 ## Deployment
 
-`web/deploy.sh` deploys the full stack to an Ubuntu 24.04 LTS VPS (tested on Linode).
-
-### Usage
+`scripts/deploy.sh` deploys the full stack to an Ubuntu 24.04 LTS server (tested on Linode).
 
 ```bash
-sudo ./web/deploy.sh -d <DOMAIN> [OPTIONS]
+sudo ./scripts/deploy.sh -d <DOMAIN> -e <EMAIL> [OPTIONS]
 ```
-
-### Options
 
 | Flag | Description |
 |------|-------------|
 | `-d, --domain DOMAIN` | **(Required)** FQDN for nginx and SSL |
-| `--letsencrypt` | Use Let's Encrypt via Certbot (default) |
-| `--email EMAIL` | Email for Let's Encrypt (default: `admin@DOMAIN`) |
-| `--self-signed` | Generate a self-signed certificate |
-| `--cert FILE --key FILE` | Use your own SSL certificate and private key |
+| `-e, --email EMAIL` | Email for Let's Encrypt |
+| `--db-password PW` | PostgreSQL password (default: random) |
+| `--node-version VER` | Node.js major version (default: 22) |
+| `--self-signed` | Use self-signed certificate |
+| `--cert FILE --key FILE` | Use custom SSL certificate |
 | `--no-ssl` | HTTP only, no SSL |
-| `--port PORT` | Gunicorn bind port (default: `5000`) |
-| `-h, --help` | Show help |
 
-### SSL Examples
+The deploy script handles everything: Node.js, pnpm, PostgreSQL, nginx, SSL, 30+ enumeration tools, kernel hardening, fail2ban, firewall, systemd services, and database seeding.
 
-```bash
-# Let's Encrypt (default, recommended for production)
-sudo ./web/deploy.sh -d enum.example.com --email admin@example.com
-
-# Self-signed (quick setup, internal use)
-sudo ./web/deploy.sh -d enum.example.com --self-signed
-
-# Custom certificate
-sudo ./web/deploy.sh -d enum.example.com --cert /path/to/cert.pem --key /path/to/key.pem
-
-# No SSL (HTTP only)
-sudo ./web/deploy.sh -d enum.example.com --no-ssl
-```
-
-### What the Deploy Script Does
-
-1. **System update** — `apt update && apt upgrade`
-2. **Dependencies** — Python 3, nginx, certbot, nmap, fail2ban, UFW, unattended-upgrades, build tools
-3. **Server hardening** (see [Security Hardening](#security-hardening))
-4. **App deployment** — copies repo to `/opt/enumethod/`
-5. **Python venv** — creates virtualenv, installs pip requirements
-6. **File permissions** — `www-data` owns the app, root owns `enumerate.sh`
-7. **Sudoers** — scoped `NOPASSWD` entry so `www-data` can only run `enumerate.sh` as root
-8. **Systemd service** — gunicorn with gevent workers, auto-restart, no timeout
-9. **SSL** — configured per the chosen mode
-10. **Nginx** — reverse proxy with SSE support (buffering disabled), security headers, rate limiting on `/login`
-11. **Firewall** — UFW with default deny inbound, allows only SSH + HTTP/HTTPS
-
-### Updating / Re-deploying
-
-The deploy script is safe to re-run. It resets `/opt/enumethod` to match the repo, re-installs deps, and restarts services:
+### Updating
 
 ```bash
-cd ~/enumethod && git pull
-sudo ./web/deploy.sh -d enum.example.com
-```
-
-### Post-Deploy
-
-```bash
-# Check service status
-systemctl status enumethod
-
-# View logs
-journalctl -u enumethod -f
-tail -f /var/log/enumethod-*.log
-
-# Check fail2ban
-fail2ban-client status
-
-# Install additional enum tools
-apt install -y gobuster nikto whatweb snmp snmp-mibs-downloader
-snap install enum4linux
-pipx install impacket    # or: pip install --break-system-packages impacket
+cd /opt/enumethod
+sudo ./scripts/rebuild.sh
 ```
 
 ---
 
-## Security Hardening
+## Security
 
-The deploy script applies the following hardening measures. Root SSH and password SSH are **kept enabled**.
-
-### Firewall (UFW)
-
-- Default deny all inbound traffic
-- Allow only SSH (22) and HTTP/HTTPS (80/443)
-
-### Fail2ban
-
-- SSH brute-force protection (5 attempts, 1 hour ban)
-- Nginx HTTP auth jail
-- Nginx bot search jail
-- Nginx rate limit jail
-
-### Nginx
-
-- Server version hidden (`server_tokens off`)
-- Security headers: `X-Frame-Options`, `X-Content-Type-Options`, `X-XSS-Protection`, `Referrer-Policy`, `Permissions-Policy`
-- TLS 1.2 and 1.3 only with strong cipher suites
-- HSTS enabled (when SSL is active)
-- Rate limiting on `/login` (10 req/s with burst of 5)
-
-### Kernel (sysctl)
-
-- SYN flood protection (TCP syncookies)
-- Reverse path filtering (anti-spoofing)
-- ICMP redirect rejection
-- Source-routed packet rejection
-- ICMP broadcast and bogus error response rejection
-- Martian packet logging
-- IP forwarding disabled
-- Full ASLR (`randomize_va_space = 2`)
-- Kernel pointer restriction
-
-### Automatic Updates
-
-- Unattended security upgrades enabled
-- Weekly auto-clean of old packages
-- No automatic reboot
-
-### Other
-
-- Core dumps disabled
-- Shared memory mounted with `noexec,nosuid`
-- Default umask set to `027`
-- Unnecessary services disabled (avahi, cups, bluetooth)
-- Web app directory restricted (`chmod 700`)
+- JWT access tokens (15min) + rotating refresh tokens (7d) with bcrypt-hashed storage
+- AES-256-GCM credential encryption with PBKDF2-derived key
+- Helmet HTTP security headers + CORS restricted to frontend origin
+- Input validation via class-validator (whitelist + forbidNonWhitelisted)
+- Rate limiting: 5/min on login, 100/min global (Nest ThrottlerModule + nginx)
+- nginx: version hidden, HSTS, security headers, rate limiting
+- Fail2ban jails: sshd, nginx-http-auth, nginx-limit-req
+- UFW firewall: SSH + HTTP/HTTPS only
+- Kernel hardening: SYN cookies, anti-spoofing, ASLR, no ICMP redirects
+- Root SSH and password SSH remain enabled (by design for pentest servers)
 
 ---
 
@@ -331,32 +155,57 @@ The deploy script applies the following hardening measures. Root SSH and passwor
 
 ```
 enumethod/
-  run.py                # Single-command launcher (venv + deps + server)
-  enumerate.sh          # Main enumeration script (11-step chain)
-  enumeration.md        # Manual enumeration playbook with commands
-  resources.md          # Curated cybersecurity tool and resource list
-  runs/                 # Scan output directories (created at runtime)
-  web/
-    app.py              # Flask application
-    config.py           # Configuration constants
-    database.py         # SQLite + bcrypt auth
-    runner.py           # Subprocess + SSE streaming
-    requirements.txt    # Python dependencies
-    deploy.sh           # VPS deployment script
-    templates/          # Jinja2 HTML templates
-      base.html         # Shared layout with nav
-      login.html        # Login page
-      dashboard.html    # Scan form + live progress
-      runs.html         # Past runs table
-      report.html       # Report iframe viewer
-      settings.html     # Password change form
-    static/
-      css/style.css     # Dark theme styles
-      js/dashboard.js   # SSE client + progress bar
-      js/runs.js        # Past runs table loader
+  enumerate.sh               # 11-step enumeration script
+  enumeration.md             # Manual enumeration playbook
+  resources.md               # Curated cybersecurity tools and resources
+  package.json               # pnpm workspace root
+  pnpm-workspace.yaml
+  turbo.json
+  prisma/
+    schema.prisma            # Database schema (PostgreSQL)
+  apps/
+    api/                     # Nest.js backend
+      src/
+        auth/                # JWT login/refresh/logout, Passport strategy
+        users/               # CRUD (admin only) + self-service password change
+        runs/                # CRUD + RunManager + WebSocket gateway
+        reports/             # HTML report serving + ZIP export
+        credentials/         # AES-256-GCM vault + CryptoService
+        ai/                  # Claude/OpenAI providers, CVE enrichment
+        settings/            # Key-value settings CRUD
+        common/              # Guards, decorators, filters, pipes
+    web/                     # Next.js frontend
+      src/
+        app/
+          login/             # Login page
+          (authenticated)/   # Auth-guarded layout
+            dashboard/       # Scan form + live output + step bar
+            runs/            # Past runs table + run detail
+            settings/        # Password change + AI prompt editor
+            admin/           # User management + credential vault
+        components/          # StepBar, LogOutput, ScanForm
+        hooks/               # useWebSocket, useApi
+        lib/                 # Auth context, API client, constants
+  packages/
+    shared/                  # Shared TypeScript types + constants
+  scripts/
+    deploy.sh                # Full idempotent VPS deployment
+    rebuild.sh               # Pull, build, migrate, restart
+    seed.ts                  # Database seeding
+  docs/
+    ARCHITECTURE.md
+    API.md
+    DEPLOYMENT.md
+    USAGE.md
+  previous_versions/
+    v1/                      # Legacy Flask/SQLite web app
 ```
 
-## Reference Docs
+## Documentation
 
-- [enumeration.md](enumeration.md) — Full manual enumeration playbook with commands for each step
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — System design, data flow, WebSocket protocol
+- [docs/API.md](docs/API.md) — Full REST API reference
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — VPS deployment guide and troubleshooting
+- [docs/USAGE.md](docs/USAGE.md) — User guide for the web interface
+- [enumeration.md](enumeration.md) — Manual enumeration playbook with commands
 - [resources.md](resources.md) — Curated cybersecurity tools and resources
