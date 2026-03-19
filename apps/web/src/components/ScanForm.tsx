@@ -1,11 +1,6 @@
 'use client';
 
-import { useState, FormEvent } from 'react';
-
-interface ScanFormProps {
-  onSubmit: (data: ScanFormData) => void;
-  disabled: boolean;
-}
+import { useState, useEffect, FormEvent } from 'react';
 
 export interface ScanFormData {
   targetIp: string;
@@ -18,7 +13,13 @@ export interface ScanFormData {
   dryRun: boolean;
 }
 
-export function ScanForm({ onSubmit, disabled }: ScanFormProps) {
+interface ScanFormProps {
+  onSubmit: (data: ScanFormData) => void;
+  disabled: boolean;
+  initialData?: Partial<ScanFormData> | null;
+}
+
+export function ScanForm({ onSubmit, disabled, initialData }: ScanFormProps) {
   const [targetIp, setTargetIp] = useState('');
   const [domain, setDomain] = useState('');
   const [steps, setSteps] = useState('');
@@ -29,6 +30,23 @@ export function ScanForm({ onSubmit, disabled }: ScanFormProps) {
   const [dryRun, setDryRun] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
+  useEffect(() => {
+    if (!initialData) return;
+    if (initialData.targetIp) setTargetIp(initialData.targetIp);
+    if (initialData.domain) setDomain(initialData.domain);
+    if (initialData.steps) setSteps(initialData.steps);
+    if (initialData.timing !== undefined) setTiming(initialData.timing);
+    if (initialData.wordlist) setWordlist(initialData.wordlist);
+    if (initialData.skipUdp !== undefined) setSkipUdp(initialData.skipUdp);
+    if (initialData.skipBruteforce !== undefined) setSkipBruteforce(initialData.skipBruteforce);
+    // Don't pre-fill dryRun — user likely wants a real run this time
+    setDryRun(false);
+    // Auto-expand advanced options if any are set
+    if (initialData.timing !== undefined || initialData.wordlist || initialData.skipUdp || initialData.skipBruteforce) {
+      setExpanded(true);
+    }
+  }, [initialData]);
+
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     onSubmit({ targetIp, domain, steps, timing, wordlist, skipUdp, skipBruteforce, dryRun });
@@ -36,6 +54,11 @@ export function ScanForm({ onSubmit, disabled }: ScanFormProps) {
 
   return (
     <form onSubmit={handleSubmit} className="card mb-4">
+      {initialData && (
+        <div className="bg-accent/10 text-accent border border-accent/20 rounded p-2 mb-4 text-sm">
+          Pre-filled from previous run. Dry run is unchecked — review settings and click Start.
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div>
           <label className="block text-sm text-text-secondary mb-1">Target IP / Hostname *</label>

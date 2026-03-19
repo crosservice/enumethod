@@ -119,6 +119,9 @@ export default function RunsPage() {
                       <Link href={`/runs/${run.id}`} className="text-accent hover:text-accent-hover text-xs">
                         View
                       </Link>
+                      <Link href={`/dashboard?rerun=${run.id}`} className="text-accent hover:text-accent-hover text-xs">
+                        Rerun
+                      </Link>
                       {run.status === 'completed' && (
                         <>
                           <a href={authUrl(`/api/runs/${run.id}/report`)} target="_blank" className="text-accent hover:text-accent-hover text-xs">

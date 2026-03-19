@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useCallback, useEffect } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { useApi } from '@/hooks/useApi';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -13,12 +13,35 @@ export default function DashboardPage() {
   const { user } = useAuth();
   const { apiFetch } = useApi();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [runId, setRunId] = useState<number | null>(null);
   const [status, setStatus] = useState<string>('idle');
   const [currentStep, setCurrentStep] = useState(0);
   const [lines, setLines] = useState<string[]>([]);
   const [error, setError] = useState('');
+  const [rerunData, setRerunData] = useState<Partial<ScanFormData> | null>(null);
+
+  // Load previous run arguments if ?rerun=<id> is in the URL
+  const rerunId = searchParams.get('rerun');
+  useEffect(() => {
+    if (!rerunId) return;
+    (async () => {
+      const res = await apiFetch(`/runs/${rerunId}`);
+      if (!res.ok) return;
+      const run = await res.json();
+      const args = run.arguments || {};
+      setRerunData({
+        targetIp: run.targetIp,
+        domain: run.domain || args.domain || '',
+        steps: args.steps || '',
+        timing: args.timing ?? 4,
+        wordlist: args.wordlist || '',
+        skipUdp: args.skipUdp || false,
+        skipBruteforce: args.skipBruteforce || false,
+      });
+    })();
+  }, [rerunId]);
 
   const onCatchup = useCallback((catchupLines: string[], step: number, _command: string | null, catchupStatus: string) => {
     setLines(catchupLines);
@@ -48,6 +71,7 @@ export default function DashboardPage() {
     setLines([]);
     setCurrentStep(0);
     setStatus('running');
+    setRerunData(null);
 
     try {
       const res = await apiFetch('/runs', {
@@ -71,6 +95,8 @@ export default function DashboardPage() {
 
       const run = await res.json();
       setRunId(run.id);
+      // Clean rerun param from URL
+      router.replace('/dashboard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start scan');
       setStatus('idle');
@@ -107,7 +133,7 @@ export default function DashboardPage() {
       )}
 
       {isAdmin && (
-        <ScanForm onSubmit={handleSubmit} disabled={isRunning} />
+        <ScanForm onSubmit={handleSubmit} disabled={isRunning} initialData={rerunData} />
       )}
 
       {!isAdmin && !isRunning && (

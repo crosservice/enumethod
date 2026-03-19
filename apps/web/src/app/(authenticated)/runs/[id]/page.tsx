@@ -125,11 +125,18 @@ export default function RunDetailPage() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-bold">Run #{run.id}</h2>
-        {user?.role === 'admin' && run.status !== 'running' && run.status !== 'paused' && (
-          <button onClick={handleDelete} className="btn-danger text-sm">
-            Delete Run
-          </button>
-        )}
+        <div className="flex gap-2">
+          {user?.role === 'admin' && (
+            <button onClick={() => router.push(`/dashboard?rerun=${run.id}`)} className="btn-secondary text-sm">
+              Rerun
+            </button>
+          )}
+          {user?.role === 'admin' && run.status !== 'running' && run.status !== 'paused' && (
+            <button onClick={handleDelete} className="btn-danger text-sm">
+              Delete Run
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Metadata */}
