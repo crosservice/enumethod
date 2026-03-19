@@ -265,8 +265,9 @@ tail -f /var/log/enumethod-*.log
 fail2ban-client status
 
 # Install additional enum tools
-apt install -y gobuster nikto whatweb enum4linux snmp snmp-mibs-downloader
-pip install impacket
+apt install -y gobuster nikto whatweb snmp snmp-mibs-downloader
+snap install enum4linux
+pipx install impacket    # or: pip install --break-system-packages impacket
 ```
 
 ---
