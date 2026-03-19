@@ -1290,145 +1290,38 @@ if should_run 11; then
     if $DRY_RUN; then
         log_step "[DRY-RUN] Would generate summary report"
     else
-        # Service summary
-        log_step "Generating service summary"
-        if [ -f "$OUTPUT_DIR/ports/detailed_scan.nmap" ]; then
-            grep -E "^\d+/(tcp|udp)\s+open" "$OUTPUT_DIR/ports/detailed_scan.nmap" | \
-                sort -t/ -k1 -n > "$R/service_summary.txt" 2>/dev/null || true
-            log_ok "Service summary → $R/service_summary.txt"
-        fi
-
-        # Vulnerability severity summary
-        log_step "Generating finding severity summary"
-        {
-            echo "============================================"
-            echo "  ENUMERATION SUMMARY REPORT"
-            echo "  Target: $TARGET ($DOMAIN)"
-            echo "  Date:   $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
-            echo "============================================"
-            echo ""
-
-            echo "--- Open TCP Ports ---"
-            if [ -n "$OPEN_TCP_PORTS" ]; then
-                echo "$OPEN_TCP_PORTS" | tr ',' '\n' | while read -r port; do
-                    echo "  $port/tcp"
-                done
-            else
-                echo "  (none detected or scan not run)"
-            fi
-            echo ""
-
-            echo "--- Open UDP Ports ---"
-            if [ -n "$OPEN_UDP_PORTS" ]; then
-                echo "$OPEN_UDP_PORTS" | tr ',' '\n' | while read -r port; do
-                    echo "  $port/udp"
-                done
-            else
-                echo "  (none detected or scan not run)"
-            fi
-            echo ""
-
-            echo "--- Service Versions ---"
-            if [ -f "$R/service_summary.txt" ]; then
-                cat "$R/service_summary.txt"
-            else
-                echo "  (detailed scan not available)"
-            fi
-            echo ""
-
-            echo "--- Vulnerability Findings ---"
-            if [ -f "$OUTPUT_DIR/vulns/nuclei_results.txt" ] && [ -s "$OUTPUT_DIR/vulns/nuclei_results.txt" ]; then
-                critical=$(grep -ci "critical" "$OUTPUT_DIR/vulns/nuclei_results.txt" 2>/dev/null || echo 0)
-                high=$(grep -ci "high" "$OUTPUT_DIR/vulns/nuclei_results.txt" 2>/dev/null || echo 0)
-                medium=$(grep -ci "medium" "$OUTPUT_DIR/vulns/nuclei_results.txt" 2>/dev/null || echo 0)
-                echo "  Nuclei:  Critical=$critical  High=$high  Medium=$medium"
-            else
-                echo "  Nuclei:  (no results or not run)"
-            fi
-            echo ""
-
-            echo "--- Sensitive Files Found ---"
-            if [ -f "$OUTPUT_DIR/web/sensitive_files.txt" ]; then
-                grep "200$" "$OUTPUT_DIR/web/sensitive_files.txt" 2>/dev/null | while read -r line; do
-                    echo "  [EXPOSED] $line"
-                done
-                exposed_count=$(grep -c "200$" "$OUTPUT_DIR/web/sensitive_files.txt" 2>/dev/null || echo 0)
-                [ "$exposed_count" -eq 0 ] && echo "  (none exposed)"
-            else
-                echo "  (check not run)"
-            fi
-            echo ""
-
-            echo "--- Key Findings ---"
-            # SMB anonymous access
-            if [ -f "$OUTPUT_DIR/smb/cme_shares.txt" ] && grep -qi "READ" "$OUTPUT_DIR/smb/cme_shares.txt" 2>/dev/null; then
-                echo "  [!] SMB shares accessible via null session"
-            fi
-            # SMB vulns
-            if [ -f "$OUTPUT_DIR/smb/smb_vulns.txt" ] && grep -qi "VULNERABLE" "$OUTPUT_DIR/smb/smb_vulns.txt" 2>/dev/null; then
-                echo "  [!] SMB vulnerabilities detected (EternalBlue/SMBGhost)"
-            fi
-            # FTP anonymous
-            if [ -f "$OUTPUT_DIR/auth/ftp_nmap.txt" ] && grep -qi "Anonymous" "$OUTPUT_DIR/auth/ftp_nmap.txt" 2>/dev/null; then
-                echo "  [!] FTP anonymous access enabled"
-            fi
-            # Redis unauthenticated
-            if [ -f "$OUTPUT_DIR/db/redis_access.txt" ] && grep -qi "redis_version" "$OUTPUT_DIR/db/redis_access.txt" 2>/dev/null; then
-                echo "  [!] Redis accessible without authentication"
-            fi
-            # SMTP open relay
-            if [ -f "$OUTPUT_DIR/mail/smtp_nmap.txt" ] && grep -qi "open-relay" "$OUTPUT_DIR/mail/smtp_nmap.txt" 2>/dev/null; then
-                echo "  [!] SMTP open relay detected"
-            fi
-            echo ""
-
-            echo "--- Output Directory ---"
-            echo "  $OUTPUT_DIR/"
-            find "$OUTPUT_DIR" -type f -name "*.txt" -o -name "*.nmap" -o -name "*.json" 2>/dev/null | \
-                sort | while read -r f; do
-                    size=$(du -h "$f" 2>/dev/null | awk '{print $1}')
-                    echo "  [$size] $f"
-                done
-            echo ""
-            echo "============================================"
-            echo "  Completed: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
-            echo "============================================"
-        } > "$R/final_summary.txt"
+        log_step "Generating consolidated HTML report"
+        HTML="$R/report.html"
+        REPORT_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 
         # Update run info with end time
-        echo "Completed:  $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> "$R/run_info.txt"
+        echo "Completed:  ${REPORT_DATE}" >> "$R/run_info.txt"
 
-        log_ok "Final summary → $R/final_summary.txt"
-        echo ""
-        cat "$R/final_summary.txt"
+        # ── Collect structured data ──────────────────────────────────────
 
-        # ── HTML Report ──────────────────────────────────────────────────
-        log_step "Generating HTML report"
-        HTML="$R/report.html"
+        # Service summary from detailed nmap scan
+        html_services=""
+        if [ -f "$OUTPUT_DIR/ports/detailed_scan.nmap" ]; then
+            while IFS= read -r line; do
+                port_proto=$(echo "$line" | awk '{print $1}')
+                state=$(echo "$line" | awk '{print $2}')
+                service=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ *//')
+                html_services+="<tr><td>${port_proto}</td><td>${state}</td><td>${service}</td></tr>"
+            done < <(grep -E "^\d+/(tcp|udp)\s+open" "$OUTPUT_DIR/ports/detailed_scan.nmap" 2>/dev/null | sort -t/ -k1 -n)
+        fi
 
-        # Collect data for the HTML report
+        # Open ports
         html_tcp=""
         if [ -n "$OPEN_TCP_PORTS" ]; then
             while IFS= read -r port; do
                 html_tcp+="<tr><td>${port}</td><td>TCP</td></tr>"
             done <<< "$(echo "$OPEN_TCP_PORTS" | tr ',' '\n')"
         fi
-
         html_udp=""
         if [ -n "$OPEN_UDP_PORTS" ]; then
             while IFS= read -r port; do
                 html_udp+="<tr><td>${port}</td><td>UDP</td></tr>"
             done <<< "$(echo "$OPEN_UDP_PORTS" | tr ',' '\n')"
-        fi
-
-        html_services=""
-        if [ -f "$R/service_summary.txt" ]; then
-            while IFS= read -r line; do
-                port_proto=$(echo "$line" | awk '{print $1}')
-                state=$(echo "$line" | awk '{print $2}')
-                service=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ *//')
-                html_services+="<tr><td>${port_proto}</td><td>${state}</td><td>${service}</td></tr>"
-            done < "$R/service_summary.txt"
         fi
 
         # Vulnerability counts
@@ -1466,16 +1359,77 @@ if should_run 11; then
             done < <(grep "200$" "$OUTPUT_DIR/web/sensitive_files.txt" 2>/dev/null || true)
         fi
 
-        # File listing
-        html_files=""
-        while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            size=$(du -h "$f" 2>/dev/null | awk '{print $1}')
-            relpath="${f#$OUTPUT_DIR/}"
-            html_files+="<tr><td>${size}</td><td>${relpath}</td></tr>"
-        done < <(find "$OUTPUT_DIR" -type f \( -name "*.txt" -o -name "*.nmap" -o -name "*.json" -o -name "*.html" \) 2>/dev/null | sort)
+        # ── Collect raw tool output into sections ────────────────────────
 
-        REPORT_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        # Helper: read a file, HTML-escape it, return as <pre> block
+        html_file_block() {
+            local filepath="$1"
+            if [ -f "$filepath" ] && [ -s "$filepath" ]; then
+                echo '<pre class="raw-output">'
+                sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' < "$filepath"
+                echo '</pre>'
+            else
+                echo '<p class="empty">No output captured.</p>'
+            fi
+        }
+
+        # Define all sections: id|label|dir_glob
+        # We walk each subdirectory and include every .txt/.nmap/.json file
+
+        build_section() {
+            local section_id="$1"
+            local section_label="$2"
+            local section_dir="$3"
+            local has_files=false
+
+            if [ ! -d "$section_dir" ]; then
+                return
+            fi
+
+            local files
+            files=$(find "$section_dir" -maxdepth 1 -type f \( -name "*.txt" -o -name "*.nmap" -o -name "*.json" \) 2>/dev/null | sort)
+            [ -z "$files" ] && return
+
+            echo "<h2 id=\"${section_id}\">${section_label}</h2>"
+            while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                local fname
+                fname=$(basename "$f")
+                local size
+                size=$(du -h "$f" 2>/dev/null | awk '{print $1}')
+                echo "<details><summary>${fname} <span class=\"file-size\">(${size})</span></summary>"
+                html_file_block "$f"
+                echo "</details>"
+            done <<< "$files"
+        }
+
+        # Build all raw output sections into a variable
+        raw_sections=""
+        raw_sections+=$(build_section "passive" "Step 1: Passive Intelligence" "$OUTPUT_DIR/passive")
+        raw_sections+=$(build_section "ports" "Step 2: Port Scanning" "$OUTPUT_DIR/ports")
+        raw_sections+=$(build_section "web" "Step 3: Web Enumeration" "$OUTPUT_DIR/web")
+        raw_sections+=$(build_section "smb" "Step 4: SMB / NetBIOS" "$OUTPUT_DIR/smb")
+        raw_sections+=$(build_section "snmp" "Step 5: SNMP" "$OUTPUT_DIR/snmp")
+        raw_sections+=$(build_section "mail" "Step 6: Mail Services" "$OUTPUT_DIR/mail")
+        raw_sections+=$(build_section "db" "Step 7: Database Services" "$OUTPUT_DIR/db")
+        raw_sections+=$(build_section "auth" "Step 8: Authentication" "$OUTPUT_DIR/auth")
+        raw_sections+=$(build_section "vulns" "Step 9: Vulnerability Scanning" "$OUTPUT_DIR/vulns")
+        raw_sections+=$(build_section "nfs" "Step 10: NFS / LDAP / RPC" "$OUTPUT_DIR/nfs")
+
+        # Build table of contents entries for raw sections that exist
+        toc_raw=""
+        [ -d "$OUTPUT_DIR/passive" ] && [ -n "$(ls "$OUTPUT_DIR/passive"/*.txt 2>/dev/null)" ] && toc_raw+='<li><a href="#passive">Passive Intelligence</a></li>'
+        [ -d "$OUTPUT_DIR/ports" ]   && [ -n "$(ls "$OUTPUT_DIR/ports"/*.txt "$OUTPUT_DIR/ports"/*.nmap 2>/dev/null)" ] && toc_raw+='<li><a href="#ports">Port Scanning</a></li>'
+        [ -d "$OUTPUT_DIR/web" ]     && [ -n "$(ls "$OUTPUT_DIR/web"/*.txt 2>/dev/null)" ] && toc_raw+='<li><a href="#web">Web Enumeration</a></li>'
+        [ -d "$OUTPUT_DIR/smb" ]     && [ -n "$(ls "$OUTPUT_DIR/smb"/*.txt 2>/dev/null)" ] && toc_raw+='<li><a href="#smb">SMB / NetBIOS</a></li>'
+        [ -d "$OUTPUT_DIR/snmp" ]    && [ -n "$(ls "$OUTPUT_DIR/snmp"/*.txt 2>/dev/null)" ] && toc_raw+='<li><a href="#snmp">SNMP</a></li>'
+        [ -d "$OUTPUT_DIR/mail" ]    && [ -n "$(ls "$OUTPUT_DIR/mail"/*.txt 2>/dev/null)" ] && toc_raw+='<li><a href="#mail">Mail Services</a></li>'
+        [ -d "$OUTPUT_DIR/db" ]      && [ -n "$(ls "$OUTPUT_DIR/db"/*.txt 2>/dev/null)" ] && toc_raw+='<li><a href="#db">Database Services</a></li>'
+        [ -d "$OUTPUT_DIR/auth" ]    && [ -n "$(ls "$OUTPUT_DIR/auth"/*.txt 2>/dev/null)" ] && toc_raw+='<li><a href="#auth">Authentication</a></li>'
+        [ -d "$OUTPUT_DIR/vulns" ]   && [ -n "$(ls "$OUTPUT_DIR/vulns"/*.txt 2>/dev/null)" ] && toc_raw+='<li><a href="#vulns">Vulnerability Scanning</a></li>'
+        [ -d "$OUTPUT_DIR/nfs" ]     && [ -n "$(ls "$OUTPUT_DIR/nfs"/*.txt 2>/dev/null)" ] && toc_raw+='<li><a href="#nfs">NFS / LDAP / RPC</a></li>'
+
+        # ── Write HTML ───────────────────────────────────────────────────
 
         cat > "$HTML" <<HTMLEOF
 <!DOCTYPE html>
@@ -1490,10 +1444,12 @@ if should_run 11; then
           --orange: #db6d28; --red: #f85149; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-         background: var(--bg); color: var(--text); line-height: 1.6; padding: 2rem; }
+         background: var(--bg); color: var(--text); line-height: 1.6; padding: 2rem; max-width: 1200px; margin: 0 auto; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
   h1 { font-size: 1.8rem; margin-bottom: .25rem; }
-  .subtitle { color: var(--muted); margin-bottom: 2rem; }
-  h2 { font-size: 1.2rem; color: var(--accent); margin: 2rem 0 .75rem; border-bottom: 1px solid var(--border);
+  .subtitle { color: var(--muted); margin-bottom: 1.5rem; }
+  h2 { font-size: 1.2rem; color: var(--accent); margin: 2.5rem 0 .75rem; border-bottom: 1px solid var(--border);
        padding-bottom: .4rem; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center; }
@@ -1512,6 +1468,32 @@ if should_run 11; then
   .sev-med  { color: var(--yellow); font-weight: 700; }
   .sev-low  { color: var(--green); font-weight: 700; }
   .empty { color: var(--muted); font-style: italic; padding: 1rem 0; }
+
+  /* Table of contents */
+  .toc { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
+  .toc h3 { font-size: 1rem; color: var(--muted); margin-bottom: .75rem; font-weight: 600; }
+  .toc ul { list-style: none; columns: 2; column-gap: 2rem; }
+  .toc li { padding: .2rem 0; font-size: .9rem; }
+  .toc li::before { content: ""; }
+
+  /* Collapsible raw output sections */
+  details { margin-bottom: .5rem; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  details summary { padding: .6rem 1rem; background: var(--card); cursor: pointer; font-size: .9rem;
+                    font-weight: 600; user-select: none; display: flex; align-items: center; justify-content: space-between; }
+  details summary:hover { background: #1c2333; }
+  details summary::marker { color: var(--accent); }
+  .file-size { color: var(--muted); font-weight: 400; font-size: .8rem; }
+  .raw-output { padding: 1rem; background: var(--bg); font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+                font-size: .78rem; line-height: 1.5; overflow-x: auto; white-space: pre-wrap; word-break: break-all;
+                color: var(--muted); max-height: 600px; overflow-y: auto; margin: 0; }
+
+  /* Run info */
+  .run-info { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.25rem;
+              font-size: .85rem; color: var(--muted); margin-bottom: 1.5rem; display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: .5rem; }
+  .run-info span { display: block; }
+  .run-info strong { color: var(--text); }
+
   footer { margin-top: 3rem; color: var(--muted); font-size: .8rem; border-top: 1px solid var(--border); padding-top: 1rem; }
 </style>
 </head>
@@ -1520,7 +1502,28 @@ if should_run 11; then
 <h1>Enumeration Report</h1>
 <p class="subtitle">Target: <strong>${TARGET}</strong> &mdash; Domain: <strong>${DOMAIN:-N/A}</strong> &mdash; ${REPORT_DATE}</p>
 
-<h2>Vulnerability Overview</h2>
+<div class="run-info">
+  <span><strong>Target:</strong> ${TARGET}</span>
+  <span><strong>Domain:</strong> ${DOMAIN:-N/A}</span>
+  <span><strong>Timing:</strong> T${TIMING}</span>
+  <span><strong>Steps:</strong> ${STEPS}</span>
+  <span><strong>Started:</strong> $(grep 'Started:' "$R/run_info.txt" 2>/dev/null | sed 's/.*: *//' || echo 'N/A')</span>
+  <span><strong>Completed:</strong> ${REPORT_DATE}</span>
+</div>
+
+<div class="toc">
+  <h3>Contents</h3>
+  <ul>
+    <li><a href="#vuln-overview">Vulnerability Overview</a></li>
+    <li><a href="#open-ports">Open Ports</a></li>
+    <li><a href="#services">Service Versions</a></li>
+    <li><a href="#findings">Key Findings</a></li>
+    <li><a href="#sensitive">Sensitive Files</a></li>
+    ${toc_raw}
+  </ul>
+</div>
+
+<h2 id="vuln-overview">Vulnerability Overview</h2>
 <div class="cards">
   <div class="card crit"><div class="num">${nuclei_critical}</div><div class="label">Critical</div></div>
   <div class="card high"><div class="num">${nuclei_high}</div><div class="label">High</div></div>
@@ -1528,7 +1531,7 @@ if should_run 11; then
   <div class="card low"><div class="num">${nuclei_low}</div><div class="label">Low</div></div>
 </div>
 
-<h2>Open Ports</h2>
+<h2 id="open-ports">Open Ports</h2>
 $(if [ -n "$html_tcp" ] || [ -n "$html_udp" ]; then
     echo '<table><tr><th>Port</th><th>Protocol</th></tr>'
     echo "${html_tcp}${html_udp}"
@@ -1537,7 +1540,7 @@ else
     echo '<p class="empty">No open ports detected or scan not run.</p>'
 fi)
 
-<h2>Service Versions</h2>
+<h2 id="services">Service Versions</h2>
 $(if [ -n "$html_services" ]; then
     echo '<table><tr><th>Port</th><th>State</th><th>Service / Version</th></tr>'
     echo "$html_services"
@@ -1546,7 +1549,7 @@ else
     echo '<p class="empty">Detailed scan not available.</p>'
 fi)
 
-<h2>Key Findings</h2>
+<h2 id="findings">Key Findings</h2>
 $(if [ -n "$html_findings" ]; then
     echo '<table><tr><th>Severity</th><th>Finding</th></tr>'
     echo "$html_findings"
@@ -1555,7 +1558,7 @@ else
     echo '<p class="empty">No critical findings flagged.</p>'
 fi)
 
-<h2>Sensitive Files</h2>
+<h2 id="sensitive">Sensitive Files</h2>
 $(if [ -n "$html_sensitive" ]; then
     echo '<table><tr><th>Status</th><th>Path</th></tr>'
     echo "$html_sensitive"
@@ -1564,14 +1567,7 @@ else
     echo '<p class="empty">No exposed sensitive files detected.</p>'
 fi)
 
-<h2>Output Files</h2>
-$(if [ -n "$html_files" ]; then
-    echo '<table><tr><th>Size</th><th>File</th></tr>'
-    echo "$html_files"
-    echo '</table>'
-else
-    echo '<p class="empty">No output files found.</p>'
-fi)
+${raw_sections}
 
 <footer>
   Generated by <strong>enumethod</strong> &mdash; ${REPORT_DATE}
@@ -1591,6 +1587,5 @@ fi
 echo ""
 log_banner "Enumeration Complete"
 log_ok "All results saved to: $OUTPUT_DIR/"
-log_step "Review the summary: cat $OUTPUT_DIR/report/final_summary.txt"
-log_step "Open HTML report:   $OUTPUT_DIR/report/report.html"
+log_step "Open report: $OUTPUT_DIR/report/report.html"
 echo ""

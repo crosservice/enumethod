@@ -144,10 +144,13 @@ sudo ./enumerate.sh 10.10.10.50 --dry-run
 
 ### Output
 
-All results are saved to the output directory (`./enum_<IP>_<timestamp>/` by default), organized by step. Step 11 generates:
+All results are saved to the output directory (`./enum_<IP>_<timestamp>/` by default). Step 11 generates a single consolidated HTML report (`report/report.html`) containing:
 
-- `report/final_summary.txt` — text summary of all findings
-- `report/report.html` — full HTML report with dark-themed dashboard showing vulnerability counts, open ports, service versions, key findings, sensitive files, and output file listing
+- Run metadata (target, domain, timing, timestamps)
+- Table of contents with jump links to every section
+- Vulnerability overview cards (critical/high/medium/low counts)
+- Open ports, service versions, key findings, sensitive files
+- Full raw tool output from every step in collapsible sections (click to expand)
 
 ---
 
