@@ -425,11 +425,9 @@ After=network.target enumethod-api.service
 User=$SERVICE_USER
 Group=$SERVICE_USER
 WorkingDirectory=$APP_DIR/apps/web
-ExecStart=/usr/bin/node $APP_DIR/apps/web/.next/standalone/apps/web/server.js
+ExecStart=$(which npx) next start -p 3000 -H 127.0.0.1
 Restart=always
 RestartSec=5
-Environment="PORT=3000"
-Environment="HOSTNAME=127.0.0.1"
 PrivateTmp=true
 
 [Install]
