@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useAuth } from '@/lib/auth-context';
 import { useApi } from '@/hooks/useApi';
 
 interface Run {
@@ -15,12 +16,14 @@ interface Run {
 }
 
 export default function RunsPage() {
+  const { accessToken } = useAuth();
   const { apiFetch } = useApi();
   const [runs, setRuns] = useState<Run[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const limit = 20;
+  const authUrl = (path: string) => `${path}${path.includes('?') ? '&' : '?'}token=${accessToken}`;
 
   useEffect(() => {
     loadRuns();
@@ -112,10 +115,10 @@ export default function RunsPage() {
                       </Link>
                       {run.status === 'completed' && (
                         <>
-                          <a href={`/api/runs/${run.id}/report`} target="_blank" className="text-accent hover:text-accent-hover text-xs">
+                          <a href={authUrl(`/api/runs/${run.id}/report`)} target="_blank" className="text-accent hover:text-accent-hover text-xs">
                             Report
                           </a>
-                          <a href={`/api/runs/${run.id}/export`} className="text-accent hover:text-accent-hover text-xs">
+                          <a href={authUrl(`/api/runs/${run.id}/export`)} className="text-accent hover:text-accent-hover text-xs">
                             ZIP
                           </a>
                         </>

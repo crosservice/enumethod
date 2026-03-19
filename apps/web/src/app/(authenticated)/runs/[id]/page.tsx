@@ -36,7 +36,7 @@ interface Assessment {
 export default function RunDetailPage() {
   const params = useParams();
   const runId = params.id as string;
-  const { user } = useAuth();
+  const { user, accessToken } = useAuth();
   const { apiFetch } = useApi();
 
   const [run, setRun] = useState<RunDetail | null>(null);
@@ -100,6 +100,7 @@ export default function RunDetailPage() {
     : outputs;
 
   const formatDate = (d: string | null) => (d ? new Date(d).toLocaleString() : '—');
+  const authUrl = (path: string) => `${path}${path.includes('?') ? '&' : '?'}token=${accessToken}`;
 
   const statusColor: Record<string, string> = {
     running: 'text-accent',
@@ -148,12 +149,12 @@ export default function RunDetailPage() {
         {run.status === 'completed' && (
           <>
             <div>
-              <a href={`/api/runs/${run.id}/report`} target="_blank" className="text-accent hover:text-accent-hover text-xs">
+              <a href={authUrl(`/api/runs/${run.id}/report`)} target="_blank" className="text-accent hover:text-accent-hover text-xs">
                 View Report
               </a>
             </div>
             <div>
-              <a href={`/api/runs/${run.id}/export`} className="text-accent hover:text-accent-hover text-xs">
+              <a href={authUrl(`/api/runs/${run.id}/export`)} className="text-accent hover:text-accent-hover text-xs">
                 Download ZIP
               </a>
             </div>
@@ -230,7 +231,7 @@ export default function RunDetailPage() {
         <div className="card">
           {run.status === 'completed' ? (
             <iframe
-              src={`/api/runs/${run.id}/report`}
+              src={authUrl(`/api/runs/${run.id}/report`)}
               className="w-full border-0 rounded"
               style={{ height: '700px' }}
               title="Enumeration Report"
