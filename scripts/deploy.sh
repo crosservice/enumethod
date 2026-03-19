@@ -72,6 +72,11 @@ if [ -z "$DOMAIN" ]; then
 fi
 
 [ -z "$EMAIL" ] && EMAIL="admin@${DOMAIN}"
+
+# If .env already exists, extract DB password from it to stay in sync
+if [ -z "$DB_PASSWORD" ] && [ -f "/opt/enumethod/.env" ]; then
+    DB_PASSWORD=$(grep -oP 'postgresql://enumethod:\K[^@]+' /opt/enumethod/.env 2>/dev/null || true)
+fi
 [ -z "$DB_PASSWORD" ] && DB_PASSWORD=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 32)
 
 if [ "$SSL_MODE" = "custom" ]; then
