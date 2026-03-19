@@ -502,8 +502,8 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    # WebSocket
-    location /ws/ {
+    # Socket.IO (WebSocket + polling)
+    location /socket.io/ {
         proxy_pass http://127.0.0.1:3001;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -577,7 +577,7 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    location /ws/ {
+    location /socket.io/ {
         proxy_pass http://127.0.0.1:3001;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;

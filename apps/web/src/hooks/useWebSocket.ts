@@ -27,9 +27,12 @@ export function useWebSocket({ runId, onOutput, onStatus, onCatchup }: UseWebSoc
   useEffect(() => {
     if (!accessToken || !runId) return;
 
+    // Socket.IO sends requests to /socket.io/ by default.
+    // nginx proxies /socket.io/ to the API on port 3001.
+    // The namespace /ws/runs is a Socket.IO-level concept, not a URL path.
     const socket = io('/ws/runs', {
       auth: { token: accessToken },
-      transports: ['websocket'],
+      transports: ['websocket', 'polling'],
     });
 
     socketRef.current = socket;
@@ -53,6 +56,10 @@ export function useWebSocket({ runId, onOutput, onStatus, onCatchup }: UseWebSoc
 
     socket.on('disconnect', () => {
       setConnected(false);
+    });
+
+    socket.on('connect_error', (err) => {
+      console.error('WebSocket connect error:', err.message);
     });
 
     return () => {
