@@ -244,22 +244,20 @@ fi
 # ══════════════════════════════════════════════════════════════════════════════
 
 step "Deploying application to $APP_DIR"
-if [ -d "$APP_DIR/.git" ]; then
-    log "Repo exists, pulling latest"
-    cd "$APP_DIR" && git pull
-else
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    REPO_DIR="$(dirname "$SCRIPT_DIR")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-    if [ -f "$REPO_DIR/enumerate.sh" ]; then
-        log "Copying repo from $REPO_DIR"
-        mkdir -p "$APP_DIR"
-        cp -r "$REPO_DIR"/* "$APP_DIR/"
-        cp -r "$REPO_DIR"/.git "$APP_DIR/" 2>/dev/null || true
-    else
-        warn "Cannot find enumerate.sh — run this from the repo or clone manually to $APP_DIR"
-        exit 1
-    fi
+if [ -d "$APP_DIR/.git" ]; then
+    log "Repo exists, resetting and pulling latest"
+    cd "$APP_DIR" && git reset --hard HEAD && git clean -fd && git pull
+elif [ -f "$REPO_DIR/enumerate.sh" ]; then
+    log "Copying repo from $REPO_DIR"
+    mkdir -p "$APP_DIR"
+    cp -r "$REPO_DIR"/* "$APP_DIR/"
+    cp -r "$REPO_DIR"/.git "$APP_DIR/" 2>/dev/null || true
+else
+    warn "Cannot find enumerate.sh — run this from the repo or clone manually to $APP_DIR"
+    exit 1
 fi
 
 chmod +x "$APP_DIR/enumerate.sh"

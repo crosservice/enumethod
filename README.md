@@ -242,6 +242,15 @@ sudo ./web/deploy.sh -d enum.example.com --no-ssl
 10. **Nginx** — reverse proxy with SSE support (buffering disabled), security headers, rate limiting on `/login`
 11. **Firewall** — UFW with default deny inbound, allows only SSH + HTTP/HTTPS
 
+### Updating / Re-deploying
+
+The deploy script is safe to re-run. It resets `/opt/enumethod` to match the repo, re-installs deps, and restarts services:
+
+```bash
+cd ~/enumethod && git pull
+sudo ./web/deploy.sh -d enum.example.com
+```
+
 ### Post-Deploy
 
 ```bash
