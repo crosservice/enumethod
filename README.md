@@ -19,17 +19,13 @@ chmod +x enumerate.sh
 sudo ./enumerate.sh 10.10.10.50
 ```
 
-### Web App (local development)
+### Web App
 
 ```bash
-cd web
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python app.py
+python3 run.py
 ```
 
-Open `http://localhost:5000` — login with `admin` / `TestifyThusly99@`.
+Creates the venv, installs dependencies, and starts the server. Open `http://localhost:5000` — login with `admin` / `TestifyThusly99@`.
 
 ### Deploy to VPS
 
@@ -161,18 +157,12 @@ The `web/` directory contains a Flask-based web application for running enumerat
 ### Running Locally
 
 ```bash
-cd web
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python app.py
+python3 run.py
 ```
 
-The app runs at `http://localhost:5000`. Default login: `admin` / `TestifyThusly99@`.
+That's it. The launcher creates a venv, installs dependencies, and starts the server at `http://localhost:5000`. Default login: `admin` / `TestifyThusly99@`. Change the password from the Settings page after logging in.
 
-The password is bcrypt-hashed in SQLite on first run. Change it from the Settings page after logging in.
-
-> **Note:** `enumerate.sh` requires root. The local dev server calls it via `sudo`, so the user running `app.py` needs passwordless sudo for the script, or you can run the app itself as root for local testing.
+> **Note:** `enumerate.sh` requires root. The app calls it via `sudo`, so the user running `run.py` needs passwordless sudo for the script, or you can run it as root for local testing.
 
 ---
 
@@ -305,6 +295,7 @@ The deploy script applies the following hardening measures. Root SSH and passwor
 
 ```
 enumethod/
+  run.py                # Single-command launcher (venv + deps + server)
   enumerate.sh          # Main enumeration script (11-step chain)
   enumeration.md        # Manual enumeration playbook with commands
   resources.md          # Curated cybersecurity tool and resource list
