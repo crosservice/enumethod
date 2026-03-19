@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { useApi } from '@/hooks/useApi';
 
@@ -35,6 +35,7 @@ interface Assessment {
 
 export default function RunDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const runId = params.id as string;
   const { user, accessToken } = useAuth();
   const { apiFetch } = useApi();
@@ -102,6 +103,12 @@ export default function RunDetailPage() {
   const formatDate = (d: string | null) => (d ? new Date(d).toLocaleString() : '—');
   const authUrl = (path: string) => `${path}${path.includes('?') ? '&' : '?'}token=${accessToken}`;
 
+  const handleDelete = async () => {
+    if (!confirm(`Delete run #${runId}? This removes all output files and cannot be undone.`)) return;
+    const res = await apiFetch(`/runs/${runId}`, { method: 'DELETE' });
+    if (res.ok) router.push('/runs');
+  };
+
   const statusColor: Record<string, string> = {
     running: 'text-accent',
     paused: 'text-warning',
@@ -116,7 +123,14 @@ export default function RunDetailPage() {
 
   return (
     <div>
-      <h2 className="text-xl font-bold mb-4">Run #{run.id}</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-bold">Run #{run.id}</h2>
+        {user?.role === 'admin' && run.status !== 'running' && run.status !== 'paused' && (
+          <button onClick={handleDelete} className="btn-danger text-sm">
+            Delete Run
+          </button>
+        )}
+      </div>
 
       {/* Metadata */}
       <div className="card mb-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">

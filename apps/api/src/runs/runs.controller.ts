@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Query, UseGuards, ConflictException } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, ConflictException } from '@nestjs/common';
 import { RunsService } from './runs.service';
 import { RunManagerService } from './run-manager.service';
 import { CreateRunDto } from './dto/create-run.dto';
@@ -95,5 +95,16 @@ export class RunsController {
     const ok = await this.runManager.cancelRun(id);
     if (!ok) throw new ConflictException('Run is not active');
     return { ok: true };
+  }
+
+  @Delete(':id')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  async remove(@Param('id', ParseIntIdPipe) id: number) {
+    // Don't allow deleting active runs
+    if (this.runManager.getActiveRun(id)) {
+      throw new ConflictException('Cannot delete an active run — cancel it first');
+    }
+    return this.runs.delete(id);
   }
 }

@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import * as fs from 'fs';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -96,5 +97,23 @@ export class RunsService {
       where: { id },
       data: { finishedAt: new Date(), exitCode },
     });
+  }
+
+  async delete(id: number) {
+    const run = await this.prisma.run.findUnique({ where: { id } });
+    if (!run) throw new NotFoundException('Run not found');
+
+    // Delete output directory from disk
+    if (run.outputDir) {
+      try {
+        fs.rmSync(run.outputDir, { recursive: true, force: true });
+      } catch {
+        // Directory may not exist (e.g. dry runs)
+      }
+    }
+
+    // Cascade deletes run_outputs and ai_assessments via Prisma schema
+    await this.prisma.run.delete({ where: { id } });
+    return { deleted: true };
   }
 }

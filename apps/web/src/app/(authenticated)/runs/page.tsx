@@ -25,6 +25,12 @@ export default function RunsPage() {
   const limit = 20;
   const authUrl = (path: string) => `${path}${path.includes('?') ? '&' : '?'}token=${accessToken}`;
 
+  const handleDelete = async (id: number, target: string) => {
+    if (!confirm(`Delete run #${id} (${target})? This removes all output files and cannot be undone.`)) return;
+    const res = await apiFetch(`/runs/${id}`, { method: 'DELETE' });
+    if (res.ok) loadRuns();
+  };
+
   useEffect(() => {
     loadRuns();
   }, [page]);
@@ -122,6 +128,14 @@ export default function RunsPage() {
                             ZIP
                           </a>
                         </>
+                      )}
+                      {run.status !== 'running' && run.status !== 'paused' && (
+                        <button
+                          onClick={() => handleDelete(run.id, run.targetIp)}
+                          className="text-danger hover:text-danger/80 text-xs"
+                        >
+                          Delete
+                        </button>
                       )}
                     </div>
                   </td>
