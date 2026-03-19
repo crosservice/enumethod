@@ -376,6 +376,14 @@ esac
 
 step "Configuring nginx"
 
+# Remove default SSL directives from nginx.conf to avoid duplicates
+sed -i 's/^\s*ssl_protocols\b/# &/'             /etc/nginx/nginx.conf
+sed -i 's/^\s*ssl_prefer_server_ciphers\b/# &/' /etc/nginx/nginx.conf
+sed -i 's/^\s*ssl_ciphers\b/# &/'               /etc/nginx/nginx.conf
+sed -i 's/^\s*ssl_session_cache\b/# &/'          /etc/nginx/nginx.conf
+sed -i 's/^\s*ssl_session_timeout\b/# &/'        /etc/nginx/nginx.conf
+sed -i 's/^\s*ssl_session_tickets\b/# &/'        /etc/nginx/nginx.conf
+
 # Harden nginx globally
 cat > /etc/nginx/conf.d/security.conf <<'NGXSEC'
 # Hide nginx version
@@ -388,7 +396,7 @@ add_header X-XSS-Protection "1; mode=block" always;
 add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
 
-# SSL hardening (applied when SSL is active)
+# SSL hardening
 ssl_protocols TLSv1.2 TLSv1.3;
 ssl_prefer_server_ciphers on;
 ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
