@@ -76,8 +76,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({ username, password }),
     });
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.message || 'Login failed');
+      let message = 'Login failed';
+      try {
+        const err = await res.json();
+        message = err.message || message;
+      } catch {
+        message = res.status === 502 ? 'API server is unreachable' : `Server error (${res.status})`;
+      }
+      throw new Error(message);
     }
     const data = await res.json();
     localStorage.setItem('refreshToken', data.refreshToken);
