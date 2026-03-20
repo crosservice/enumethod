@@ -123,7 +123,7 @@ declare -A TOOL_PKG_MAP=(
     [jq]="apt:jq"
     # Web
     [whatweb]="apt:whatweb"
-    [testssl.sh]="apt:testssl"
+    [testssl.sh]="apt:testssl.sh"
     [feroxbuster]="apt:feroxbuster;snap:feroxbuster"
     [gobuster]="apt:gobuster;go:github.com/OJ/gobuster/v3@latest"
     [ffuf]="apt:ffuf;go:github.com/ffuf/ffuf/v2@latest"
@@ -195,8 +195,8 @@ install_tool() {
                 ;;
             pip)
                 log_step "  Trying: pip install $pkg"
-                if pip install "$pkg" >> /tmp/enumerate_install.log 2>&1 || \
-                   pip3 install "$pkg" >> /tmp/enumerate_install.log 2>&1; then
+                if pip install --break-system-packages "$pkg" >> /tmp/enumerate_install.log 2>&1 || \
+                   pip3 install --break-system-packages "$pkg" >> /tmp/enumerate_install.log 2>&1; then
                     if has_cmd "$tool"; then
                         log_ok "Installed '$tool' via pip ($pkg)"
                         return 0
@@ -531,7 +531,7 @@ should_run() {
 extract_tcp_ports() {
     local gnmap_file="$1"
     if [ -f "$gnmap_file" ]; then
-        grep -oP '\d+/open/tcp' "$gnmap_file" | cut -d/ -f1 | sort -un | tr '\n' ',' | sed 's/,$//'
+        grep -oP '\d+/open/tcp' "$gnmap_file" 2>/dev/null | cut -d/ -f1 | sort -un | tr '\n' ',' | sed 's/,$//' || true
     fi
 }
 
@@ -539,7 +539,7 @@ extract_tcp_ports() {
 extract_udp_ports() {
     local gnmap_file="$1"
     if [ -f "$gnmap_file" ]; then
-        grep -oP '\d+/open/udp' "$gnmap_file" | cut -d/ -f1 | sort -un | tr '\n' ',' | sed 's/,$//'
+        grep -oP '\d+/open/udp' "$gnmap_file" 2>/dev/null | cut -d/ -f1 | sort -un | tr '\n' ',' | sed 's/,$//' || true
     fi
 }
 
@@ -956,7 +956,7 @@ if should_run 3; then
 
         # Nuclei web-specific
         run_if nuclei "Web template scan (nuclei)" "$W/nuclei_web.txt" \
-            "nuclei -u '$BASE_URL' -t http/ -t misconfigurations/ -t exposures/ -severity critical,high,medium -nc -o '$W/nuclei_web_results.txt' 2>&1"
+            "nuclei -u '$BASE_URL' -t http/ -severity critical,high,medium -nc -o '$W/nuclei_web_results.txt' 2>&1"
     fi
 fi
 
@@ -1268,7 +1268,7 @@ if should_run 10; then
         if [ -n "$NUCLEI_TARGETS" ]; then
             echo -e "$NUCLEI_TARGETS" > "$V/nuclei_targets.txt"
             run_cmd "Nuclei vulnerability scan" "$V/nuclei.log" \
-                "nuclei -l '$V/nuclei_targets.txt' -t cves/ -t misconfigurations/ -t exposures/ -severity critical,high,medium -nc -o '$V/nuclei_results.txt' 2>&1"
+                "nuclei -l '$V/nuclei_targets.txt' -severity critical,high,medium -nc -o '$V/nuclei_results.txt' 2>&1"
         fi
     else
         log_skip "Nuclei scan (nuclei — install failed)"
@@ -1284,7 +1284,9 @@ if should_run 10; then
     if ensure_cmd searchsploit && [ -f "$OUTPUT_DIR/ports/detailed_scan.nmap" ]; then
         log_step "Correlating service versions with searchsploit"
         if ! $DRY_RUN; then
-            grep -E "^\d+/tcp\s+open" "$OUTPUT_DIR/ports/detailed_scan.nmap" 2>/dev/null | while IFS= read -r line; do
+            {
+                grep -P "^\d+/tcp\s+open" "$OUTPUT_DIR/ports/detailed_scan.nmap" 2>/dev/null || true
+            } | while IFS= read -r line; do
                 service=$(echo "$line" | awk '{for(i=3;i<=NF;i++) printf $i " "; print ""}' | sed 's/[[:space:]]*$//')
                 if [ -n "$service" ]; then
                     echo "=== $service ===" >> "$V/searchsploit_results.txt"
@@ -1327,7 +1329,7 @@ if should_run 11; then
                 state=$(echo "$line" | awk '{print $2}')
                 service=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ *//')
                 html_services+="<tr><td>${port_proto}</td><td>${state}</td><td>${service}</td></tr>"
-            done < <(grep -E "^\d+/(tcp|udp)\s+open" "$OUTPUT_DIR/ports/detailed_scan.nmap" 2>/dev/null | sort -t/ -k1 -n)
+            done < <(grep -P "^\d+/(tcp|udp)\s+open" "$OUTPUT_DIR/ports/detailed_scan.nmap" 2>/dev/null | sort -t/ -k1 -n || true)
         fi
 
         # Open ports
