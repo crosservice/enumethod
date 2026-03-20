@@ -63,4 +63,16 @@ Provide a security assessment with:
 4. Recommended Remediation Steps
 5. Overall Risk Rating
 
-Format findings as structured JSON in a \`severity_summary\` code block.`;
+At the end of your response, provide a JSON code block with exactly this structure (use integer counts):
+\`\`\`json
+{
+  "critical": 0,
+  "high": 0,
+  "medium": 0,
+  "low": 0,
+  "info": 0,
+  "findings": [
+    {"title": "...", "severity": "critical|high|medium|low|info", "description": "...", "remediation": "..."}
+  ]
+}
+\`\`\``;

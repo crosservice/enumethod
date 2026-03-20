@@ -62,15 +62,26 @@ export class AiService {
       response = await this.callOpenAI(apiKey, prompt);
     }
 
-    // Parse severity summary from response
+    // Parse severity summary from response — try all code blocks, pick the one with severity counts
     let severitySummary = null;
-    const jsonMatch = response.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-    if (jsonMatch) {
+    const codeBlocks = [...response.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n```/g)];
+    for (const match of codeBlocks) {
       try {
-        severitySummary = JSON.parse(jsonMatch[1]);
+        const parsed = JSON.parse(match[1]);
+        if (parsed && typeof parsed.critical === 'number') {
+          severitySummary = parsed;
+          break;
+        }
+        if (parsed?.severity_summary && typeof parsed.severity_summary.critical === 'number') {
+          severitySummary = parsed.severity_summary;
+          break;
+        }
       } catch {
-        this.logger.warn('Failed to parse severity_summary JSON from AI response');
+        // not valid JSON or not the severity block, try next
       }
+    }
+    if (!severitySummary) {
+      this.logger.warn('No severity_summary JSON found in AI response');
     }
 
     // Save assessment
